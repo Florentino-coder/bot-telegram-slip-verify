@@ -71,3 +71,65 @@ async def log_transaction(trans_ref: str, sender_name: str, receiver_name: str, 
         return False
     # Run synchronous DB write in a separate thread to prevent blocking the event loop
     return await asyncio.to_thread(_db_log_transaction, trans_ref, sender_name, receiver_name, amount, trans_date, raw_ocr)
+
+
+# --- Allowed Groups Management (Access Control) ---
+
+def _db_add_allowed_group(group_id: int, group_name: str, added_by: int) -> bool:
+    if not _supabase_client:
+        return False
+    try:
+        data = {
+            "group_id": group_id,
+            "group_name": group_name,
+            "added_by": added_by
+        }
+        _supabase_client.table("allowed_groups").upsert(data).execute()
+        logger.info(f"Group {group_id} whitelisted successfully.")
+        return True
+    except Exception as e:
+        logger.error(f"Error adding allowed group {group_id}: {e}")
+        return False
+
+def _db_remove_allowed_group(group_id: int) -> bool:
+    if not _supabase_client:
+        return False
+    try:
+        _supabase_client.table("allowed_groups").delete().eq("group_id", group_id).execute()
+        logger.info(f"Group {group_id} removed from whitelist.")
+        return True
+    except Exception as e:
+        logger.error(f"Error removing allowed group {group_id}: {e}")
+        return False
+
+def _db_is_group_allowed(group_id: int) -> bool:
+    if not _supabase_client:
+        return False
+    try:
+        response = _supabase_client.table("allowed_groups").select("group_id").eq("group_id", group_id).execute()
+        return len(response.data) > 0
+    except Exception as e:
+        logger.error(f"Error checking allowed group {group_id}: {e}")
+        return False
+
+def _db_get_allowed_groups() -> list:
+    if not _supabase_client:
+        return []
+    try:
+        response = _supabase_client.table("allowed_groups").select("group_id, group_name, created_at").order("created_at").execute()
+        return response.data
+    except Exception as e:
+        logger.error(f"Error getting allowed groups: {e}")
+        return []
+
+async def add_allowed_group(group_id: int, group_name: str, added_by: int) -> bool:
+    return await asyncio.to_thread(_db_add_allowed_group, group_id, group_name, added_by)
+
+async def remove_allowed_group(group_id: int) -> bool:
+    return await asyncio.to_thread(_db_remove_allowed_group, group_id)
+
+async def is_group_allowed(group_id: int) -> bool:
+    return await asyncio.to_thread(_db_is_group_allowed, group_id)
+
+async def get_allowed_groups() -> list:
+    return await asyncio.to_thread(_db_get_allowed_groups)

@@ -19,6 +19,9 @@ from handlers.slip import process_slip_image
 async def run_integration_test():
     print("\n--- Starting Bot Handler Integration Test ---")
     
+    # Override admin IDs for testing
+    Config.ADMIN_USER_IDS = [123456789]
+    
     # 1. Mock Bot and Message objects
     mock_bot = AsyncMock()
     mock_message = AsyncMock()
@@ -28,6 +31,8 @@ async def run_integration_test():
     mock_photo.file_id = "mock_file_id_123"
     mock_message.photo = [mock_photo]
     mock_message.from_user.id = 123456789
+    mock_message.chat.type = "private"
+    mock_message.chat.title = "Private Test Chat"
     
     # Capture replies and edits
     processing_msg = AsyncMock()

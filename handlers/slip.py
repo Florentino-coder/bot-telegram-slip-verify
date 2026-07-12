@@ -4,7 +4,7 @@ from aiogram import Router, types, Bot
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from config import Config
-from database.supabase_db import check_duplicate, log_transaction
+from database.supabase_db import check_duplicate, log_transaction, is_group_allowed, get_allowed_groups
 from services.qr_decoder import decode_qr_from_bytes
 from services.vision_ai import extract_slip_details
 from services.risk_engine import assess_slip_risk
@@ -44,23 +44,75 @@ async def stats_handler(message: types.Message):
         # Run DB query synchronously in executor
         import asyncio
         def query_stats():
-            response = _supabase_client.table("transactions").select("amount, created_at").execute()
+            response = _supabase_client.table("transactions").select("amount, created_at, sender_name, trans_ref").execute()
             return response.data
             
         data = await asyncio.to_thread(query_stats)
         
+        from datetime import datetime, timezone, timedelta
+        tz_th = timezone(timedelta(hours=7))
+        now_th = datetime.now(tz_th)
+        today_str = now_th.strftime("%Y-%m-%d")
+        
         total_slips = len(data)
         total_amount = sum(float(row.get("amount") or 0) for row in data)
         
+        today_slips = 0
+        today_amount = 0.0
+        max_amount = 0.0
+        max_ref = "ไม่มี"
+        senders = set()
+        
+        for row in data:
+            amt = float(row.get("amount") or 0)
+            created_str = row.get("created_at")
+            sender = row.get("sender_name")
+            
+            # Count unique senders
+            if sender:
+                senders.add(sender)
+                
+            # Find maximum amount
+            if amt > max_amount:
+                max_amount = amt
+                max_ref = row.get("trans_ref") or "ไม่ระบุ"
+                
+            # Check if transaction is from today
+            if created_str:
+                try:
+                    dt = datetime.fromisoformat(created_str.replace("Z", "+00:00")).astimezone(tz_th)
+                    if dt.strftime("%Y-%m-%d") == today_str:
+                        today_slips += 1
+                        today_amount += amt
+                except Exception as parse_err:
+                    logger.error(f"Error parsing created_at timestamp: {parse_err}")
+                    
+        average_amount = total_amount / total_slips if total_slips > 0 else 0.0
+        unique_senders = len(senders)
+        
+        # Get active whitelisted groups count
+        groups_list = await get_allowed_groups()
+        active_groups = len(groups_list)
+        
         stats_text = (
-            "📊 **สถิติการตรวจสอบสลิปของระบบ:**\n\n"
-            f"🔹 จำนวนสลิปที่ตรวจสอบผ่านทั้งหมด: `{total_slips}` รายการ\n"
-            f"🔹 ยอดเงินสะสมรวม: `{total_amount:,.2f} THB`\n\n"
-            "💡 ข้อมูลดึงมาจาก Supabase Database"
+            "📊 **แดชบอร์ดสถิติระบบตรวจสอบสลิป:**\n\n"
+            "🌐 **สถิติสะสมทั้งหมด (Overall Stats):**\n"
+            f"  • จำนวนสลิปที่ตรวจสอบผ่าน: `{total_slips:,}` รายการ\n"
+            f"  • ยอดโอนสะสมรวม: `{total_amount:,.2f} THB`\n\n"
+            "📅 **สถิติวันนี้ (Today's Stats):**\n"
+            f"  • จำนวนสลิปวันนี้: `{today_slips:,}` รายการ\n"
+            f"  • ยอดเงินรวมวันนี้: `{today_amount:,.2f} THB`\n\n"
+            "📈 **ข้อมูลวิเคราะห์เชิงลึก (Insights):**\n"
+            f"  • ยอดเงินเฉลี่ยต่อรายการ: `{average_amount:,.2f} THB`\n"
+            f"  • ยอดเงินโอนสูงสุด: `{max_amount:,.2f} THB` (รหัส: `{max_ref}`)\n"
+            f"  • จำนวนลูกค้าโอนไม่ซ้ำชื่อ: `{unique_senders:,}` ราย\n\n"
+            "👥 **ข้อมูลกลุ่มแชทที่ได้รับอนุญาต:**\n"
+            f"  • จำนวนกลุ่มที่อนุญาตขณะนี้: `{active_groups:,}` กลุ่ม\n\n"
+            "💡 ข้อมูลประมวลผลดึงมาจาก Supabase Database"
         )
         await message.reply(stats_text, parse_mode="Markdown")
     except Exception as e:
-        logger.error(f"Error executing stats command: {e}")
+        logger.error(f"Error executing stats command: {e}", exc_info=True)
         await message.reply("❌ เกิดข้อผิดพลาดในการดึงสถิติจากฐานข้อมูล")
 
 
@@ -68,6 +120,23 @@ async def stats_handler(message: types.Message):
 async def process_slip_image(message: types.Message, bot: Bot):
     """Processes any uploaded photo as a bank transfer slip."""
     is_group = message.chat.type in ["group", "supergroup"]
+    
+    # Check access permission
+    if is_group:
+        allowed = await is_group_allowed(message.chat.id)
+        if not allowed:
+            await message.reply("⚠️ หากต้องการใช้งานระบบ Slip Verify ติดต่อ Florentino")
+            try:
+                await bot.leave_chat(message.chat.id)
+            except Exception as leave_err:
+                logger.error(f"Failed to leave chat {message.chat.id}: {leave_err}")
+            return
+    else:
+        # Private chat: Lockdown for non-admins
+        if message.from_user.id not in Config.ADMIN_USER_IDS:
+            await message.reply("⚠️ หากต้องการใช้งานระบบ Slip Verify ติดต่อ Florentino")
+            return
+
     processing_msg = None
     
     try:
