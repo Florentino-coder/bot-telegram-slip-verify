@@ -296,7 +296,7 @@ async def process_slip_image(message: types.Message, bot: Bot):
 
         success_text = (
             f"✅ **สลิปผ่านเกณฑ์ สแกน QR Code ได้** {db_status}\n\n"
-            f"👤 **ผู้โอน**: `{masked_sender}`\n"
+            f"👤 **ผู้โอน**: `{sender_name}`\n"
             f"🏢 **ผู้รับโอน**: `{receiver_name}`\n"
             f"💵 **จำนวนเงิน**: `{amount:,.2f} THB`{amount_suffix}\n"
             f"📅 **วันเวลา**: `{trans_date or 'ไม่ระบุ'}`\n"
