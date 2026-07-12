@@ -19,6 +19,42 @@ logging.basicConfig(
 logger = logging.getLogger("SlipBot")
 
 
+async def handle_ping(reader, writer):
+    """Responds with HTTP 200 OK for Render / UptimeRobot health check pings."""
+    response = (
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/plain; charset=utf-8\r\n"
+        "Content-Length: 12\r\n"
+        "Connection: close\r\n\r\n"
+        "Bot is alive"
+    )
+    try:
+        writer.write(response.encode("utf-8"))
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+    except Exception:
+        pass
+
+
+async def start_health_check_server():
+    """Starts a lightweight HTTP server on the PORT env variable for Render compatibility."""
+    import os
+    port_str = os.environ.get("PORT")
+    if not port_str:
+        logger.info("PORT environment variable not set. Skipping health check server.")
+        return
+        
+    try:
+        port = int(port_str)
+        server = await asyncio.start_server(handle_ping, "0.0.0.0", port)
+        logger.info(f"Health check server listening on 0.0.0.0:{port}")
+        async with server:
+            await server.serve_forever()
+    except Exception as e:
+        logger.error(f"Error starting health check server on port {port_str}: {e}")
+
+
 async def main():
     logger.info("Starting Telegram Slip Verification Bot...")
 
@@ -46,7 +82,10 @@ async def main():
     dp.include_router(start.router)
     dp.include_router(slip.router)
 
-    # 4. Start polling
+    # 4. Start health check server (Render Free Web Service port binding)
+    asyncio.create_task(start_health_check_server())
+
+    # 5. Start polling
     logger.info("Bot router mapping registered. Running start_polling...")
     try:
         # Delete webhook before starting polling
