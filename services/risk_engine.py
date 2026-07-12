@@ -3,6 +3,22 @@ from config import Config
 
 logger = logging.getLogger("SlipBot.RiskEngine")
 
+def normalize_ref(ref: str) -> str:
+    """
+    Normalizes transaction reference numbers by converting to uppercase,
+    removing symbols, and replacing common OCR-confused characters:
+    - I, L, l -> 1
+    - O, o -> 0
+    """
+    if not ref:
+        return ""
+    # Strip spaces, hyphens, underscores and convert to uppercase
+    s = ref.replace(" ", "").replace("-", "").replace("_", "").upper()
+    # Unify character confusions
+    s = s.replace("I", "1").replace("L", "1")
+    s = s.replace("O", "0")
+    return s
+
 def assess_slip_risk(qr_data: dict | None, ocr_data: dict | None) -> dict:
     """
     Assesses the risk of the bank transfer slip.
@@ -67,12 +83,15 @@ def assess_slip_risk(qr_data: dict | None, ocr_data: dict | None) -> dict:
     ocr_ref = ocr_data.get("trans_ref")
     
     if qr_ref and ocr_ref:
-        # Strip all whitespace, hyphens, or formatting for comparison
-        clean_qr_ref = qr_ref.replace(" ", "").replace("-", "").replace("_", "")
-        clean_ocr_ref = ocr_ref.replace(" ", "").replace("-", "").replace("_", "")
+        clean_qr_ref = normalize_ref(qr_ref)
+        clean_ocr_ref = normalize_ref(ocr_ref)
         
         if clean_qr_ref != clean_ocr_ref:
-            warnings.append(f"Transaction ID mismatch! QR Ref: '{qr_ref}', OCR Ref: '{ocr_ref}'. This indicates potential slip alteration.")
+            warnings.append(
+                f"รหัสธุรกรรมไม่ตรงกัน! (ตรวจพบการสวม QR Code หรือการตัดต่อสลิป)\n"
+                f"  • รหัสธุรกรรมใน QR Code: `{qr_ref}`\n"
+                f"  • รหัสธุรกรรมบนภาพ (OCR): `{ocr_ref}`"
+            )
             risk_score += 90
 
     # 3. Transfer Amount Verification

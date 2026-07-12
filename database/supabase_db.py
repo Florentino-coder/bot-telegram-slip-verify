@@ -2,6 +2,7 @@ import asyncio
 import logging
 from supabase import create_client, Client
 from config import Config
+from services.risk_engine import normalize_ref
 
 logger = logging.getLogger("SlipBot.Database")
 
@@ -23,11 +24,12 @@ def _db_check_duplicate(trans_ref: str) -> bool:
     if not _supabase_client:
         logger.error("Supabase client not initialized.")
         return False
+    norm_ref = normalize_ref(trans_ref)
     try:
-        response = _supabase_client.table("transactions").select("trans_ref").eq("trans_ref", trans_ref).execute()
+        response = _supabase_client.table("transactions").select("trans_ref").eq("trans_ref", norm_ref).execute()
         return len(response.data) > 0
     except Exception as e:
-        logger.error(f"Error checking duplicate for {trans_ref}: {e}")
+        logger.error(f"Error checking duplicate for {norm_ref}: {e}")
         return False
 
 
@@ -36,9 +38,10 @@ def _db_log_transaction(trans_ref: str, sender_name: str, receiver_name: str, am
     if not _supabase_client:
         logger.error("Supabase client not initialized.")
         return False
+    norm_ref = normalize_ref(trans_ref)
     try:
         data = {
-            "trans_ref": trans_ref,
+            "trans_ref": norm_ref,
             "sender_name": sender_name,
             "receiver_name": receiver_name,
             "amount": amount,
@@ -47,10 +50,10 @@ def _db_log_transaction(trans_ref: str, sender_name: str, receiver_name: str, am
             "is_valid": True
         }
         _supabase_client.table("transactions").insert(data).execute()
-        logger.info(f"Transaction logged successfully: {trans_ref}")
+        logger.info(f"Transaction logged successfully: {norm_ref}")
         return True
     except Exception as e:
-        logger.error(f"Error logging transaction {trans_ref}: {e}")
+        logger.error(f"Error logging transaction {norm_ref}: {e}")
         return False
 
 

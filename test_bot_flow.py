@@ -105,7 +105,7 @@ async def run_integration_test():
         
         edited_text = processing_msg.edit_text.call_args[0][0]
         print(f"Bot Response:\n{edited_text}")
-        if "ตรวจสอบสลิปไม่ผ่าน / น่าสงสัย" in edited_text and "ID mismatch" in edited_text:
+        if "ตรวจสอบสลิปไม่ผ่าน / น่าสงสัย" in edited_text and "รหัสธุรกรรมไม่ตรงกัน" in edited_text:
             print("✅ Test Case C: PASSED")
         else:
             print("❌ Test Case C: FAILED")
@@ -123,7 +123,7 @@ async def run_integration_test():
          patch("handlers.slip.extract_slip_details", AsyncMock(return_value=wrong_receiver_ocr_data)), \
          patch("handlers.slip.check_duplicate", AsyncMock(return_value=False)), \
          patch("config.Config.MERCHANT_NAME", "Antigravity Merchant"):
-         
+          
         await process_slip_image(mock_message, mock_bot)
         
         edited_text = processing_msg.edit_text.call_args[0][0]
@@ -132,6 +132,30 @@ async def run_integration_test():
             print("✅ Test Case D: PASSED")
         else:
             print("❌ Test Case D: FAILED")
+
+    # Reset mocks for next test
+    mock_message.reply.reset_mock()
+    processing_msg.edit_text.reset_mock()
+
+    # Case E: Confusing Characters (I in QR, 1 in OCR)
+    print("\n[Test Case E] Testing OCR character confusion (I in QR, 1 in OCR)...")
+    qr_data_with_I = mock_qr_data.copy()
+    qr_data_with_I["trans_ref"] = "619314297410I000015B9790" # Real reference with 'I'
+    ocr_data_with_1 = mock_ocr_data.copy()
+    ocr_data_with_1["trans_ref"] = "6193142974101000015B9790" # Misread as '1' by OCR
+    
+    with patch("handlers.slip.decode_qr_from_bytes", return_value=qr_data_with_I), \
+         patch("handlers.slip.extract_slip_details", AsyncMock(return_value=ocr_data_with_1)), \
+         patch("handlers.slip.check_duplicate", AsyncMock(return_value=False)):
+          
+        await process_slip_image(mock_message, mock_bot)
+        
+        edited_text = processing_msg.edit_text.call_args[0][0]
+        print(f"Bot Response:\n{edited_text}")
+        if "ยืนยันสลิปโอนเงินสำเร็จ" in edited_text and "อาจจะเป็นสลิปจริง" in edited_text:
+            print("✅ Test Case E: PASSED")
+        else:
+            print("❌ Test Case E: FAILED")
 
 
 if __name__ == "__main__":
