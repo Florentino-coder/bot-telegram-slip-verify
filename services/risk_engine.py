@@ -43,7 +43,7 @@ def assess_slip_risk(qr_data: dict | None, ocr_data: dict | None) -> dict:
                 "warnings": ["QR code is missing or unreadable, and OCR fallback is disabled."],
                 "risk_score": 90
             }
-        warnings.append("No QR code detected; relying solely on OCR text extraction.")
+        warnings.append("No QR code detected; relying solely on OCR text extraction. (อาจจะปลอมแปลง - ตรวจไม่พบ QR Code)")
         risk_score += 20
 
     # Ensure ocr_data is not None for the checks below

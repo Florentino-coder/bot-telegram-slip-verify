@@ -8,6 +8,7 @@ from database.supabase_db import check_duplicate, log_transaction
 from services.qr_decoder import decode_qr_from_bytes
 from services.vision_ai import extract_slip_details
 from services.risk_engine import assess_slip_risk
+from services.bank_codes import get_bank_name
 
 logger = logging.getLogger("SlipBot.Handlers.Slip")
 router = Router()
@@ -184,13 +185,27 @@ async def process_slip_image(message: types.Message, bot: Bot):
         masked_sender = mask_name(sender_name)
         
         # 5. Response Message
+        if qr_data:
+            qr_bank = get_bank_name(qr_data.get("sending_bank"))
+            qr_ref_str = qr_data.get("trans_ref")
+            qr_status_text = (
+                f"🔎 **การตรวจสอบ QR**: `อาจจะเป็นสลิปจริง - ตรวจพบ QR Code`\n"
+                f"🏦 **ธนาคารต้นทาง (QR)**: `{qr_bank}`\n"
+                f"🔑 **รหัสธุรกรรม (QR)**: `{qr_ref_str}`"
+            )
+        else:
+            qr_status_text = (
+                f"🔎 **การตรวจสอบ QR**: `⚠️ น่าสงสัย / อาจจะปลอมแปลง - ตรวจไม่พบ QR Code`"
+            )
+
         success_text = (
             "✅ **ยืนยันสลิปโอนเงินสำเร็จ!**\n\n"
             f"👤 **ผู้โอน**: `{masked_sender}`\n"
             f"🏢 **ผู้รับโอน**: `{receiver_name}`\n"
             f"💵 **จำนวนเงิน**: `{amount:,.2f} THB`\n"
             f"📅 **วันเวลา**: `{trans_date or 'ไม่ระบุ'}`\n"
-            f"🔑 **รหัสอ้างอิง**: `{trans_ref}`\n\n"
+            f"🔑 **รหัสอ้างอิง (OCR)**: `{trans_ref}`\n\n"
+            f"{qr_status_text}\n\n"
             f"🛡️ **สถานะระบบ**: ผ่านเกณฑ์ความปลอดภัย ({db_status})"
         )
         
