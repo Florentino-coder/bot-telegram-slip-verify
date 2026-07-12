@@ -232,8 +232,7 @@ async def process_slip_image(message: types.Message, bot: Bot):
         
         # If the risk analysis suggests unsafe
         disclaimer = (
-            "\n\n📢 **คำแนะนำ**: ระบบนี้สร้างขึ้นเพื่อตรวจสอบว่า QR Code สามารถใช้งานได้หรือไม่ "
-            "(มีโอกาสเป็นสลิปจริงประมาณ 70%) โปรดตรวจสอบบัญชีธนาคารเพื่อความถูกต้อง"
+            "\n\n📢 **คำแนะนำ** : QR ใช้งานได้ (โอกาสจริง 70%) เช็คบัญชีเพื่อความถูกต้อง"
         )
 
         if not risk_result["is_safe"]:
@@ -286,29 +285,23 @@ async def process_slip_image(message: types.Message, bot: Bot):
             )
 
         # Check amount limits warning
-        amount_warning = ""
+        amount_suffix = ""
         try:
             min_limit, max_limit = await get_amount_limits()
             amount_val = float(amount)
             if amount_val < min_limit or amount_val > max_limit:
-                amount_warning = (
-                    f"\n\n⚠️ **คำเตือนยอดเงินโอน!**\n"
-                    f"• ยอดเงินโอน: **{amount_val:,.2f} THB** (อยู่นอกช่วงควบคุมปกติ `{min_limit:,.2f} - {max_limit:,.2f} THB`)\n"
-                    f"👉 **กรุณาตรวจสอบยอดเงินในบัญชีอีกครั้ง เพื่อความชัวร์**"
-                )
+                amount_suffix = " ⚠️ เช็คในบัญชีอีกครั้ง!"
         except Exception as limit_err:
             logger.error(f"Error checking amount limits: {limit_err}")
 
         success_text = (
-            "✅ **สลิปผ่านเกณฑ์ สแกน QR Code ได้**\n\n"
+            f"✅ **สลิปผ่านเกณฑ์ สแกน QR Code ได้** {db_status}\n\n"
             f"👤 **ผู้โอน**: `{masked_sender}`\n"
             f"🏢 **ผู้รับโอน**: `{receiver_name}`\n"
-            f"💵 **จำนวนเงิน**: `{amount:,.2f} THB`\n"
+            f"💵 **จำนวนเงิน**: `{amount:,.2f} THB`{amount_suffix}\n"
             f"📅 **วันเวลา**: `{trans_date or 'ไม่ระบุ'}`\n"
             f"🔑 **รหัสอ้างอิง (OCR)**: `{trans_ref}`\n\n"
-            f"{qr_status_text}\n\n"
-            f"{db_status}"
-            f"{amount_warning}"
+            f"{qr_status_text}"
             f"{disclaimer}"
         )
         
