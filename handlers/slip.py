@@ -66,7 +66,8 @@ async def stats_handler(message: types.Message):
 @router.message(lambda message: message.photo is not None)
 async def process_slip_image(message: types.Message, bot: Bot):
     """Processes any uploaded photo as a bank transfer slip."""
-    processing_msg = await message.reply("⏳ **กำลังดาวน์โหลดและประมวลผลสลิปโอนเงินของคุณ...**\nกรุณารอสักครู่")
+    is_group = message.chat.type in ["group", "supergroup"]
+    processing_msg = None
     
     try:
         # 1. Download photo from Telegram to memory
@@ -80,8 +81,12 @@ async def process_slip_image(message: types.Message, bot: Bot):
         qr_data = decode_qr_from_bytes(image_bytes)
         qr_ref = qr_data.get("trans_ref") if qr_data else None
         
-        # 3. Check for duplicates immediately (if QR scanned successfully)
+        # Determine if we should send a processing message
         if qr_ref:
+            # If QR is detected, it is definitely a slip. Send processing message.
+            processing_msg = await message.reply("⏳ **กำลังดาวน์โหลดและประมวลผลสลิปโอนเงินของคุณ...**\nกรุณารอสักครู่")
+            
+            # Check duplicate
             is_dup = await check_duplicate(qr_ref)
             if is_dup:
                 await processing_msg.edit_text(
@@ -91,38 +96,71 @@ async def process_slip_image(message: types.Message, bot: Bot):
                     parse_mode="Markdown"
                 )
                 return
+        else:
+            # If QR is not detected:
+            if is_group:
+                # In group chats, if no QR, check if OCR is enabled. If not, silently ignore.
+                if not Config.ENABLE_OCR_FALLBACK:
+                    return
+            else:
+                # In DM, send processing message immediately
+                processing_msg = await message.reply("⏳ **กำลังดาวน์โหลดและประมวลผลรูปภาพของคุณ...**\nกรุณารอสักครู่")
 
-        # 4. Fallback or Vision OCR parsing
+        # 3. Fallback or Vision OCR parsing
         ocr_data = None
         if qr_ref or Config.ENABLE_OCR_FALLBACK:
             ocr_data = await extract_slip_details(image_bytes)
             
+            # In group chats, if no QR, verify if it's actually a slip before replying
+            if is_group and not qr_ref:
+                if not ocr_data:
+                    # Silently ignore unreadable photos in group chats
+                    return
+                    
+                # Check for slip indicator keywords in the extracted text
+                text_to_check = f"{ocr_data.get('sender_name') or ''} {ocr_data.get('receiver_name') or ''} {ocr_data.get('trans_ref') or ''}"
+                keywords = ["โอน", "สำเร็จ", "บาท", "thb", "transfer", "successful", "ref", "อ้างอิง"]
+                is_slip = any(kw in text_to_check.lower() for kw in keywords) or (ocr_data.get("amount") is not None and ocr_data.get("amount") > 0)
+                
+                if not is_slip:
+                    # Silently ignore general photos in group chats
+                    return
+                    
+                # It's a slip! Send a processing message now that we want to reply
+                processing_msg = await message.reply("⏳ **กำลังตรวจสอบประมวลผลสลิปโอนเงิน...**")
+
             # Double check duplicate against OCR trans_ref if QR was missing but OCR found it
             if ocr_data and ocr_data.get("trans_ref") and not qr_ref:
                 ocr_ref = ocr_data["trans_ref"]
                 is_dup = await check_duplicate(ocr_ref)
                 if is_dup:
-                    await processing_msg.edit_text(
-                        f"⚠️ **ตรวจพบการใช้สลิปซ้ำ (ตรวจด้วย AI)!**\n\n"
+                    dup_text = (
+                        f"⚠️ **ตรวจพบการใช้สลิปซ้ำ!**\n\n"
                         f"❌ รหัสอ้างอิง: `{ocr_ref}`\n"
-                        "สลิปใบนี้เคยได้รับการอนุมัติในระบบไปแล้ว ไม่สามารถใช้งานซ้ำได้",
-                        parse_mode="Markdown"
+                        "สลิปใบนี้เคยได้รับการอนุมัติในระบบไปแล้ว ไม่สามารถใช้งานซ้ำได้"
                     )
+                    if processing_msg:
+                        await processing_msg.edit_text(dup_text, parse_mode="Markdown")
+                    else:
+                        await message.reply(dup_text, parse_mode="Markdown")
                     return
 
-        # 5. Risk Assessment (Cross-checking details)
+        # 4. Risk Assessment (Cross-checking details)
         risk_result = assess_slip_risk(qr_data, ocr_data)
         
         # If the risk analysis suggests unsafe
         if not risk_result["is_safe"]:
             warnings_text = "\n".join([f"• {w}" for w in risk_result["warnings"]])
-            await processing_msg.edit_text(
+            error_text = (
                 f"🚨 **ตรวจสอบสลิปไม่ผ่าน / น่าสงสัย!**\n\n"
                 f"**ความเสี่ยงระดับ**: `{risk_result['risk_score']}/100`\n"
                 f"**ปัญหาที่พบ:**\n{warnings_text}\n\n"
-                "กรุณาส่งรูปภาพสลิปที่ถูกต้อง หรือติดต่อเจ้าหน้าที่หากข้อมูลดังกล่าวมีความผิดพลาด",
-                parse_mode="Markdown"
+                "กรุณาส่งรูปภาพสลิปที่ถูกต้อง หรือติดต่อเจ้าหน้าที่หากข้อมูลดังกล่าวมีความผิดพลาด"
             )
+            if processing_msg:
+                await processing_msg.edit_text(error_text, parse_mode="Markdown")
+            else:
+                await message.reply(error_text, parse_mode="Markdown")
             return
 
         # At this point, slip is valid and safe. Let's log it.
@@ -143,11 +181,9 @@ async def process_slip_image(message: types.Message, bot: Bot):
         )
         
         db_status = "บันทึกในฐานข้อมูลแล้ว" if db_logged else "เกิดข้อผิดพลาดในการบันทึกข้อมูล"
-        
-        # Mask sender's name for user privacy
         masked_sender = mask_name(sender_name)
         
-        # 6. Response Message
+        # 5. Response Message
         success_text = (
             "✅ **ยืนยันสลิปโอนเงินสำเร็จ!**\n\n"
             f"👤 **ผู้โอน**: `{masked_sender}`\n"
@@ -158,9 +194,22 @@ async def process_slip_image(message: types.Message, bot: Bot):
             f"🛡️ **สถานะระบบ**: ผ่านเกณฑ์ความปลอดภัย ({db_status})"
         )
         
-        await processing_msg.edit_text(success_text, parse_mode="Markdown")
+        if processing_msg:
+            await processing_msg.edit_text(success_text, parse_mode="Markdown")
+        else:
+            await message.reply(success_text, parse_mode="Markdown")
+            
         logger.info(f"Verified slip successfully: {trans_ref} | Amount: {amount}")
         
     except Exception as e:
         logger.error(f"Error processing slip upload: {e}", exc_info=True)
-        await processing_msg.edit_text("❌ **เกิดข้อผิดพลาดภายในระบบ**\nไม่สามารถประมวลผลรูปภาพได้ในขณะนี้ กรุณาลองใหม่อีกครั้ง")
+        err_text = "❌ **เกิดข้อผิดพลาดภายในระบบ**\nไม่สามารถประมวลผลรูปภาพได้ในขณะนี้ กรุณาลองใหม่อีกครั้ง"
+        
+        # In group chats, if no processing message was sent, fail silently to avoid spam
+        if is_group and not processing_msg:
+            return
+            
+        if processing_msg:
+            await processing_msg.edit_text(err_text, parse_mode="Markdown")
+        else:
+            await message.reply(err_text, parse_mode="Markdown")

@@ -1,5 +1,9 @@
 import sys
 import os
+import logging
+
+# Configure logging to output to stdout
+logging.basicConfig(level=logging.INFO, format="%(levelname)s - %(message)s")
 
 # Reconfigure stdout/stderr to use UTF-8 to prevent encoding errors on Windows console when printing emojis
 if hasattr(sys.stdout, 'reconfigure'):

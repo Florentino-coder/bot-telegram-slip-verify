@@ -121,7 +121,8 @@ async def run_integration_test():
     
     with patch("handlers.slip.decode_qr_from_bytes", return_value=mock_qr_data), \
          patch("handlers.slip.extract_slip_details", AsyncMock(return_value=wrong_receiver_ocr_data)), \
-         patch("handlers.slip.check_duplicate", AsyncMock(return_value=False)):
+         patch("handlers.slip.check_duplicate", AsyncMock(return_value=False)), \
+         patch("config.Config.MERCHANT_NAME", "Antigravity Merchant"):
          
         await process_slip_image(mock_message, mock_bot)
         

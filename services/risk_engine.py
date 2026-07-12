@@ -49,19 +49,18 @@ def assess_slip_risk(qr_data: dict | None, ocr_data: dict | None) -> dict:
     # Ensure ocr_data is not None for the checks below
     assert ocr_data is not None
 
-    # 1. Receiver Name Verification
+    # 1. Receiver Name Verification (Optional - only check if MERCHANT_NAME is set and is not the default template)
     receiver_name = ocr_data.get("receiver_name") or ""
     merchant_name = Config.MERCHANT_NAME or ""
     
-    if not merchant_name:
-        logger.warning("Config MERCHANT_NAME is not set. Skipping receiver name validation.")
-    elif not receiver_name:
-        warnings.append("Receiver name could not be extracted from the slip image.")
-        risk_score += 30
-    elif merchant_name.lower() not in receiver_name.lower():
-        # Substring matching (case insensitive)
-        warnings.append(f"Receiver name mismatch. Expected: '{merchant_name}', Found: '{receiver_name}'")
-        risk_score += 60
+    if merchant_name and merchant_name != "your_merchant_name_here":
+        if not receiver_name:
+            warnings.append("Receiver name could not be extracted from the slip image.")
+            risk_score += 30
+        elif merchant_name.lower() not in receiver_name.lower():
+            # Substring matching (case insensitive)
+            warnings.append(f"Receiver name mismatch. Expected: '{merchant_name}', Found: '{receiver_name}'")
+            risk_score += 60
 
     # 2. Transaction Reference Mismatch Check
     qr_ref = qr_data.get("trans_ref") if qr_data else None

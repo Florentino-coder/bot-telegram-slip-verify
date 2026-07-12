@@ -48,6 +48,7 @@ async def extract_slip_details(image_bytes: bytes) -> dict | None:
         # Prepare request payload
         payload = {
             "model": Config.OPENROUTER_MODEL,
+            "max_tokens": 1000, # Avoid 402 credit limit issues by asking for a small token allocation
             "messages": [
                 {
                     "role": "system",
@@ -68,10 +69,7 @@ async def extract_slip_details(image_bytes: bytes) -> dict | None:
                         }
                     ]
                 }
-            ],
-            "response_format": {
-                "type": "json_object"
-            }
+            ]
         }
         
         # Make async POST request
