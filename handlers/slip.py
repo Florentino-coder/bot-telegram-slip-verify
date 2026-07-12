@@ -4,7 +4,10 @@ from aiogram import Router, types, Bot
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from config import Config
-from database.supabase_db import check_duplicate, log_transaction, is_group_allowed, get_allowed_groups
+from database.supabase_db import (
+    check_duplicate, log_transaction, is_group_allowed, get_allowed_groups,
+    is_maintenance_mode
+)
 from services.qr_decoder import decode_qr_from_bytes
 from services.vision_ai import extract_slip_details
 from services.risk_engine import assess_slip_risk
@@ -119,6 +122,15 @@ async def stats_handler(message: types.Message):
 @router.message(lambda message: message.photo is not None)
 async def process_slip_image(message: types.Message, bot: Bot):
     """Processes any uploaded photo as a bank transfer slip."""
+    # Check maintenance mode first
+    is_maint = await is_maintenance_mode()
+    if is_maint and message.from_user.id not in Config.ADMIN_USER_IDS:
+        await message.reply(
+            "🛠️ **ระบบตรวจสอบสลิปอยู่ในระหว่างการปิดปรับปรุงชั่วคราว**\nขออภัยในความไม่สะดวก กรุณาส่งสลิปเข้ามาใหม่อีกครั้งในภายหลัง",
+            parse_mode="Markdown"
+        )
+        return
+
     is_group = message.chat.type in ["group", "supergroup"]
     
     # Check access permission

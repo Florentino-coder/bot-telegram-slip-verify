@@ -2,7 +2,10 @@ import logging
 from aiogram import Router, types
 from aiogram.filters import CommandStart, Command
 from config import Config
-from database.supabase_db import add_allowed_group, remove_allowed_group, get_allowed_groups
+from database.supabase_db import (
+    add_allowed_group, remove_allowed_group, get_allowed_groups,
+    set_maintenance_mode, is_maintenance_mode
+)
 
 logger = logging.getLogger("SlipBot.Handlers.Start")
 router = Router()
@@ -134,3 +137,43 @@ async def groups_handler(message: types.Message):
         text += f"{i}. `{g_name}` (ID: `{g_id}`)\n"
 
     await message.reply(text, parse_mode="Markdown")
+
+
+@router.message(Command("maintenance"))
+async def maintenance_handler(message: types.Message):
+    """Admin command to toggle maintenance mode (เปิด/ปิด บอท)."""
+    # Check if the user is an admin
+    if message.from_user.id not in Config.ADMIN_USER_IDS:
+        await message.reply("❌ คุณไม่มีสิทธิ์เข้าถึงคำสั่งนี้")
+        return
+
+    args = message.text.split()
+    if len(args) < 2:
+        # Show current maintenance status
+        is_maint = await is_maintenance_mode()
+        status_str = "🛠️ **เปิดใช้งานอยู่ (ปิดปรับปรุงระบบชั่วคราว)**" if is_maint else "✅ **ปิดใช้งานอยู่ (ระบบเปิดทำงานปกติ)**"
+        await message.reply(
+            f"🛠️ **สถานะระบบปิดปรับปรุง (Maintenance Mode):**\n"
+            f"• สถานะปัจจุบัน: {status_str}\n\n"
+            f"💡 **วิธีตั้งค่า:**\n"
+            f"• `/maintenance on` : เพื่อสั่งปิดปรับปรุงระบบ (บอทจะบล็อกคนทั่วไป)\n"
+            f"• `/maintenance off` : เพื่อสั่งเปิดระบบปกติ (ทุกคนใช้ได้ตามปกติ)",
+            parse_mode="Markdown"
+        )
+        return
+
+    action = args[1].lower()
+    if action in ["on", "enable", "true"]:
+        success = await set_maintenance_mode(True)
+        if success:
+            await message.reply("🛠️ **เปิดใช้งานระบบปิดปรับปรุงสำเร็จ!**\nนับจากนี้ บอทจะงดบริการสแกนสลิปสำหรับคนทั่วไปชั่วคราว (แอดมินยังสแกนเทสได้ตามปกติ)", parse_mode="Markdown")
+        else:
+            await message.reply("❌ เกิดข้อผิดพลาดในการบันทึกข้อมูลสถานะปิดปรับปรุง")
+    elif action in ["off", "disable", "false"]:
+        success = await set_maintenance_mode(False)
+        if success:
+            await message.reply("✅ **ปิดระบบปิดปรับปรุงสำเร็จ!**\nบอทเปิดให้ทุกคนสแกนตรวจสอบสลิปได้ตามปกติแล้วครับ", parse_mode="Markdown")
+        else:
+            await message.reply("❌ เกิดข้อผิดพลาดในการบันทึกข้อมูลสถานะเปิดระบบ")
+    else:
+        await message.reply("❌ รูปแบบคำสั่งไม่ถูกต้อง กรุณาใช้ `/maintenance on` หรือ `/maintenance off`", parse_mode="Markdown")

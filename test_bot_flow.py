@@ -13,7 +13,11 @@ from config import Config
 print(f"Loaded config MERCHANT_NAME: '{Config.MERCHANT_NAME}'")
 
 # Import handlers under test
+import handlers.slip
 from handlers.slip import process_slip_image
+
+# Mock maintenance mode check to prevent database calls during test execution
+handlers.slip.is_maintenance_mode = AsyncMock(return_value=False)
 
 
 async def run_integration_test():

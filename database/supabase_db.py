@@ -133,3 +133,36 @@ async def is_group_allowed(group_id: int) -> bool:
 
 async def get_allowed_groups() -> list:
     return await asyncio.to_thread(_db_get_allowed_groups)
+
+
+# --- Bot Settings Management (Maintenance Mode) ---
+
+def _db_set_maintenance_mode(enabled: bool) -> bool:
+    if not _supabase_client:
+        return False
+    try:
+        val_str = "true" if enabled else "false"
+        _supabase_client.table("bot_settings").upsert({"key": "maintenance_mode", "value": val_str}).execute()
+        logger.info(f"Maintenance mode set to {enabled}")
+        return True
+    except Exception as e:
+        logger.error(f"Error setting maintenance mode: {e}")
+        return False
+
+def _db_is_maintenance_mode() -> bool:
+    if not _supabase_client:
+        return False
+    try:
+        response = _supabase_client.table("bot_settings").select("value").eq("key", "maintenance_mode").execute()
+        if response.data:
+            return response.data[0].get("value") == "true"
+        return False
+    except Exception as e:
+        logger.error(f"Error reading maintenance mode: {e}")
+        return False
+
+async def set_maintenance_mode(enabled: bool) -> bool:
+    return await asyncio.to_thread(_db_set_maintenance_mode, enabled)
+
+async def is_maintenance_mode() -> bool:
+    return await asyncio.to_thread(_db_is_maintenance_mode)
