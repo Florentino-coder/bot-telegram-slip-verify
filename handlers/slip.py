@@ -6,7 +6,7 @@ from aiogram.fsm.context import FSMContext
 from config import Config
 from database.supabase_db import (
     check_duplicate, log_transaction, is_group_allowed, get_allowed_groups,
-    is_maintenance_mode
+    is_maintenance_mode, get_amount_limits
 )
 from services.qr_decoder import decode_qr_from_bytes
 from services.vision_ai import extract_slip_details
@@ -231,6 +231,11 @@ async def process_slip_image(message: types.Message, bot: Bot):
         risk_result = assess_slip_risk(qr_data, ocr_data)
         
         # If the risk analysis suggests unsafe
+        disclaimer = (
+            "\n\n📢 **คำแนะนำ**: ระบบนี้สร้างขึ้นเพื่อตรวจสอบว่า QR Code สามารถใช้งานได้หรือไม่ "
+            "(มีโอกาสเป็นสลิปจริงประมาณ 70%) โปรดตรวจสอบบัญชีธนาคารเพื่อความถูกต้อง"
+        )
+
         if not risk_result["is_safe"]:
             warnings_text = "\n".join([f"• {w}" for w in risk_result["warnings"]])
             error_text = (
@@ -238,6 +243,7 @@ async def process_slip_image(message: types.Message, bot: Bot):
                 f"**ความเสี่ยงระดับ**: `{risk_result['risk_score']}/100`\n"
                 f"**ปัญหาที่พบ:**\n{warnings_text}\n\n"
                 "กรุณาส่งรูปภาพสลิปที่ถูกต้อง หรือติดต่อเจ้าหน้าที่หากข้อมูลดังกล่าวมีความผิดพลาด"
+                f"{disclaimer}"
             )
             if processing_msg:
                 await processing_msg.edit_text(error_text, parse_mode="Markdown")
@@ -262,7 +268,7 @@ async def process_slip_image(message: types.Message, bot: Bot):
             raw_ocr=ocr_data
         )
         
-        db_status = "บันทึกในฐานข้อมูลแล้ว" if db_logged else "เกิดข้อผิดพลาดในการบันทึกข้อมูล"
+        db_status = "⚙️💾✅" if db_logged else "⚙️💾❌"
         masked_sender = mask_name(sender_name)
         
         # 5. Response Message
@@ -279,15 +285,31 @@ async def process_slip_image(message: types.Message, bot: Bot):
                 f"🔎 **การตรวจสอบ QR**: `⚠️ น่าสงสัย / อาจจะปลอมแปลง - ตรวจไม่พบ QR Code`"
             )
 
+        # Check amount limits warning
+        amount_warning = ""
+        try:
+            min_limit, max_limit = await get_amount_limits()
+            amount_val = float(amount)
+            if amount_val < min_limit or amount_val > max_limit:
+                amount_warning = (
+                    f"\n\n⚠️ **คำเตือนยอดเงินโอน!**\n"
+                    f"• ยอดเงินโอน: **{amount_val:,.2f} THB** (อยู่นอกช่วงควบคุมปกติ `{min_limit:,.2f} - {max_limit:,.2f} THB`)\n"
+                    f"👉 **กรุณาตรวจสอบยอดเงินในบัญชีอีกครั้ง เพื่อความชัวร์**"
+                )
+        except Exception as limit_err:
+            logger.error(f"Error checking amount limits: {limit_err}")
+
         success_text = (
-            "✅ **ยืนยันสลิปโอนเงินสำเร็จ!**\n\n"
+            "✅ **สลิปผ่านเกณฑ์ สแกน QR Code ได้**\n\n"
             f"👤 **ผู้โอน**: `{masked_sender}`\n"
             f"🏢 **ผู้รับโอน**: `{receiver_name}`\n"
             f"💵 **จำนวนเงิน**: `{amount:,.2f} THB`\n"
             f"📅 **วันเวลา**: `{trans_date or 'ไม่ระบุ'}`\n"
             f"🔑 **รหัสอ้างอิง (OCR)**: `{trans_ref}`\n\n"
             f"{qr_status_text}\n\n"
-            f"🛡️ **สถานะระบบ**: ผ่านเกณฑ์ความปลอดภัย ({db_status})"
+            f"{db_status}"
+            f"{amount_warning}"
+            f"{disclaimer}"
         )
         
         if processing_msg:

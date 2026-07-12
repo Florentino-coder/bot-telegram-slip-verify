@@ -166,3 +166,44 @@ async def set_maintenance_mode(enabled: bool) -> bool:
 
 async def is_maintenance_mode() -> bool:
     return await asyncio.to_thread(_db_is_maintenance_mode)
+
+
+def _db_get_amount_limits() -> tuple[float, float]:
+    if not _supabase_client:
+        return (100.0, 999.0)
+    try:
+        response = _supabase_client.table("bot_settings").select("key, value").in_("key", ["min_amount", "max_amount"]).execute()
+        min_val = 100.0
+        max_val = 999.0
+        for row in response.data:
+            k = row.get("key")
+            v = row.get("value")
+            try:
+                if k == "min_amount":
+                    min_val = float(v)
+                elif k == "max_amount":
+                    max_val = float(v)
+            except ValueError:
+                pass
+        return (min_val, max_val)
+    except Exception as e:
+        logger.error(f"Error reading amount limits from db: {e}")
+        return (100.0, 999.0)
+
+def _db_set_amount_limits(min_val: float, max_val: float) -> bool:
+    if not _supabase_client:
+        return False
+    try:
+        _supabase_client.table("bot_settings").upsert({"key": "min_amount", "value": str(min_val)}).execute()
+        _supabase_client.table("bot_settings").upsert({"key": "max_amount", "value": str(max_val)}).execute()
+        logger.info(f"Amount limits updated: Min={min_val}, Max={max_val}")
+        return True
+    except Exception as e:
+        logger.error(f"Error setting amount limits in db: {e}")
+        return False
+
+async def get_amount_limits() -> tuple[float, float]:
+    return await asyncio.to_thread(_db_get_amount_limits)
+
+async def set_amount_limits(min_val: float, max_val: float) -> bool:
+    return await asyncio.to_thread(_db_set_amount_limits, min_val, max_val)

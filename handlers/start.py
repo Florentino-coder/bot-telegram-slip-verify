@@ -4,7 +4,8 @@ from aiogram.filters import CommandStart, Command
 from config import Config
 from database.supabase_db import (
     add_allowed_group, remove_allowed_group, get_allowed_groups,
-    set_maintenance_mode, is_maintenance_mode
+    set_maintenance_mode, is_maintenance_mode,
+    get_amount_limits, set_amount_limits
 )
 
 logger = logging.getLogger("SlipBot.Handlers.Start")
@@ -177,3 +178,54 @@ async def maintenance_handler(message: types.Message):
             await message.reply("❌ เกิดข้อผิดพลาดในการบันทึกข้อมูลสถานะเปิดระบบ")
     else:
         await message.reply("❌ รูปแบบคำสั่งไม่ถูกต้อง กรุณาใช้ `/maintenance on` หรือ `/maintenance off`", parse_mode="Markdown")
+
+
+@router.message(Command("limit"))
+async def limit_handler(message: types.Message):
+    """Admin command to configure normal transaction amount limits (ช่วงยอดเงินปกติ)."""
+    # Check if the user is an admin
+    if message.from_user.id not in Config.ADMIN_USER_IDS:
+        await message.reply("❌ คุณไม่มีสิทธิ์เข้าถึงคำสั่งนี้")
+        return
+
+    args = message.text.split()
+    if len(args) < 3:
+        # Show current amount limits configuration
+        min_amt, max_amt = await get_amount_limits()
+        await message.reply(
+            f"⚙️ **ช่วงยอดเงินปกติในการตรวจสอบสลิป (Amount Limits):**\n"
+            f"• ยอดเงินขั้นต่ำ: `{min_amt:,.2f} THB`\n"
+            f"• ยอดเงินขั้นสูงสุด: `{max_amt:,.2f} THB`\n\n"
+            f"💡 หากยอดเงินอยู่นอกเหนือช่วงนี้ บอทจะเพิ่มข้อความเตือนร้านค้าทันทีเพื่อความปลอดภัย\n\n"
+            f"💡 **วิธีตั้งค่า:**\n"
+            f"• `/limit <ยอดต่ำสุด> <ยอดสูงสุด>`\n"
+            f"  เช่น: `/limit 100 999` หรือ `/limit 50 1500`",
+            parse_mode="Markdown"
+        )
+        return
+
+    try:
+        min_val = float(args[1])
+        max_val = float(args[2])
+    except ValueError:
+        await message.reply("❌ รูปแบบตัวเลขไม่ถูกต้อง กรุณากรอกจำนวนเงินขั้นต่ำและขั้นสูงเป็นตัวเลข")
+        return
+
+    if min_val < 0 or max_val < 0:
+        await message.reply("❌ จำนวนเงินไม่สามารถติดลบได้")
+        return
+
+    if min_val >= max_val:
+        await message.reply("❌ ยอดเงินขั้นต่ำต้องน้อยกว่ายอดเงินขั้นสูงสุด")
+        return
+
+    success = await set_amount_limits(min_val, max_val)
+    if success:
+        await message.reply(
+            f"✅ **ปรับปรุงช่วงยอดเงินปกติสำเร็จ!**\n\n"
+            f"• ยอดเงินขั้นต่ำใหม่: `{min_val:,.2f} THB`\n"
+            f"• ยอดเงินขั้นสูงสุดใหม่: `{max_val:,.2f} THB`",
+            parse_mode="Markdown"
+        )
+    else:
+        await message.reply("❌ เกิดข้อผิดพลาดในการบันทึกข้อมูลช่วงยอดเงินลงฐานข้อมูล")

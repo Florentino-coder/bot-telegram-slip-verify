@@ -18,6 +18,7 @@ from handlers.slip import process_slip_image
 
 # Mock maintenance mode check to prevent database calls during test execution
 handlers.slip.is_maintenance_mode = AsyncMock(return_value=False)
+handlers.slip.get_amount_limits = AsyncMock(return_value=(100.0, 999.0))
 
 
 async def run_integration_test():
@@ -74,7 +75,7 @@ async def run_integration_test():
         # Capture what was printed by the edited reply
         edited_text = processing_msg.edit_text.call_args[0][0]
         print(f"Bot Response:\n{edited_text}")
-        if "ยืนยันสลิปโอนเงินสำเร็จ" in edited_text:
+        if "สลิปผ่านเกณฑ์" in edited_text:
             print("✅ Test Case A: PASSED")
         else:
             print("❌ Test Case A: FAILED")
@@ -161,7 +162,7 @@ async def run_integration_test():
         
         edited_text = processing_msg.edit_text.call_args[0][0]
         print(f"Bot Response:\n{edited_text}")
-        if "ยืนยันสลิปโอนเงินสำเร็จ" in edited_text and "อาจจะเป็นสลิปจริง" in edited_text:
+        if "สลิปผ่านเกณฑ์" in edited_text and "อาจจะเป็นสลิปจริง" in edited_text:
             print("✅ Test Case E: PASSED")
         else:
             print("❌ Test Case E: FAILED")
