@@ -20,16 +20,28 @@ logger = logging.getLogger("SlipBot")
 
 
 async def handle_ping(reader, writer):
-    """Responds with HTTP 200 OK for Render / UptimeRobot health check pings."""
-    response = (
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: text/plain; charset=utf-8\r\n"
-        "Content-Length: 12\r\n"
-        "Connection: close\r\n\r\n"
-        "Bot is alive"
-    )
+    """Responds with HTTP 200 OK for Render / UptimeRobot health check pings (supporting both HEAD and GET)."""
     try:
-        writer.write(response.encode("utf-8"))
+        # Read the request line (e.g., "HEAD / HTTP/1.1" or "GET / HTTP/1.1")
+        request_line = await reader.readline()
+        request_str = request_line.decode("utf-8")
+        
+        is_head = request_str.startswith("HEAD")
+        
+        headers = (
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: text/plain; charset=utf-8\r\n"
+            "Content-Length: 12\r\n"
+            "Connection: close\r\n\r\n"
+        )
+        
+        if is_head:
+            # HEAD requests expect headers only, no response body
+            writer.write(headers.encode("utf-8"))
+        else:
+            response = headers + "Bot is alive"
+            writer.write(response.encode("utf-8"))
+            
         await writer.drain()
         writer.close()
         await writer.wait_closed()
