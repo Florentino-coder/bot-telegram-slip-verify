@@ -11,7 +11,7 @@ from database.supabase_db import (
 )
 from services.qr_decoder import decode_qr_from_bytes
 from services.vision_ai import extract_slip_details
-from services.risk_engine import assess_slip_risk
+from services.risk_engine import assess_slip_risk, match_merchant_name
 from services.bank_codes import get_bank_name
 from services.slipok import verify_slip_via_slipok
 
@@ -266,7 +266,7 @@ async def process_slip_image(message: types.Message, bot: Bot):
                     if merchant_names:
                         match_found = False
                         for m_name in merchant_names:
-                            if m_name.lower() in verify_res["receiver_name"].lower():
+                            if match_merchant_name(m_name, verify_res["receiver_name"]):
                                 match_found = True
                                 break
                         if not match_found:

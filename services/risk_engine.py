@@ -19,6 +19,47 @@ def normalize_ref(ref: str) -> str:
     s = s.replace("O", "0")
     return s
 
+def clean_thai_name(name: str) -> str:
+    """
+    Cleans Thai and English names by removing spaces, common punctuation,
+    and business/personal prefixes/suffixes (like บริษัท, บจก., นาย, นางสาว, Co., Ltd.)
+    """
+    name = name.lower()
+    for char in [" ", ".", "-", "*", "(", ")", "[", "]", "_", "/"]:
+        name = name.replace(char, "")
+    
+    # Prefix list to clean up (ordered by length descending to avoid partial matches first)
+    prefixes = [
+        "บริษัทจำกัด", "บริษัท", "บจกจำกัด", "บจก", "หจกจำกัด", "หจก",
+        "นางสาว", "เด็กหญิง", "เด็กชาย", "นาย", "นาง", "miss", "mrs", "mr",
+        "จำกัด", "coltd", "corp", "ltd", "co"
+    ]
+    for p in prefixes:
+        name = name.replace(p, "")
+    return name
+
+def match_merchant_name(configured_name: str, slip_name: str) -> bool:
+    """
+    Intelligently checks if the slip receiver name matches the configured merchant name.
+    Handles masking, common Thai name prefixes/suffixes, and substring matching.
+    """
+    c_clean = clean_thai_name(configured_name)
+    s_clean = clean_thai_name(slip_name)
+    
+    if not c_clean or not s_clean:
+        return False
+        
+    # Check if either is a prefix of the other (handles masking at the end like "บริษัท ดี พ" matching "บริษัท ดี พลัส โปร จำกัด")
+    if c_clean.startswith(s_clean) or s_clean.startswith(c_clean):
+        return True
+        
+    # Check if either is a substring of the other
+    if s_clean in c_clean or c_clean in s_clean:
+        return True
+        
+    return False
+
+
 def match_account_number(full_acc: str, masked_acc: str) -> bool:
     """
     Intelligently checks if a full account number matches a masked account number.
@@ -123,10 +164,10 @@ def assess_slip_risk(
             warnings.append("Receiver name could not be extracted from the slip image.")
             risk_score += 30
         else:
-            # Check if any allowed name is a substring of the receiver name
+            # Check if any allowed name matches using match_merchant_name
             match_found = False
             for m_name in allowed_names:
-                if m_name.lower() in receiver_name.lower():
+                if match_merchant_name(m_name, receiver_name):
                     match_found = True
                     break
             if not match_found:
