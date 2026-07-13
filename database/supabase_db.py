@@ -207,3 +207,244 @@ async def get_amount_limits() -> tuple[float, float]:
 
 async def set_amount_limits(min_val: float, max_val: float) -> bool:
     return await asyncio.to_thread(_db_set_amount_limits, min_val, max_val)
+
+
+# --- SlipOK & Merchant Name Settings Management ---
+
+def _db_get_slipok_config() -> dict:
+    config = {
+        "mode": "off",
+        "api_key": "",
+        "branch_id": "",
+        "min_amount": 500.0
+    }
+    if not _supabase_client:
+        return config
+    try:
+        response = _supabase_client.table("bot_settings").select("key, value").in_("key", ["slipok_mode", "slipok_api_key", "slipok_branch_id", "slipok_min_amount"]).execute()
+        for row in response.data:
+            k = row.get("key")
+            v = row.get("value")
+            if k == "slipok_mode":
+                config["mode"] = v if v in ["smart", "always", "off"] else "off"
+            elif k == "slipok_api_key":
+                config["api_key"] = v or ""
+            elif k == "slipok_branch_id":
+                config["branch_id"] = v or ""
+            elif k == "slipok_min_amount":
+                try:
+                    config["min_amount"] = float(v)
+                except ValueError:
+                    pass
+        return config
+    except Exception as e:
+        logger.error(f"Error reading slipok config: {e}")
+        return config
+
+def _db_set_slipok_mode(mode: str) -> bool:
+    if not _supabase_client:
+        return False
+    try:
+        _supabase_client.table("bot_settings").upsert({"key": "slipok_mode", "value": mode}).execute()
+        logger.info(f"SlipOK mode set to {mode}")
+        return True
+    except Exception as e:
+        logger.error(f"Error setting slipok mode: {e}")
+        return False
+
+def _db_set_slipok_api_key(api_key: str) -> bool:
+    if not _supabase_client:
+        return False
+    try:
+        _supabase_client.table("bot_settings").upsert({"key": "slipok_api_key", "value": api_key}).execute()
+        logger.info("SlipOK API key updated in DB")
+        return True
+    except Exception as e:
+        logger.error(f"Error setting slipok api key: {e}")
+        return False
+
+def _db_set_slipok_branch_id(branch_id: str) -> bool:
+    if not _supabase_client:
+        return False
+    try:
+        _supabase_client.table("bot_settings").upsert({"key": "slipok_branch_id", "value": branch_id}).execute()
+        logger.info(f"SlipOK branch ID set to {branch_id}")
+        return True
+    except Exception as e:
+        logger.error(f"Error setting slipok branch id: {e}")
+        return False
+
+def _db_set_slipok_min_amount(amount: float) -> bool:
+    if not _supabase_client:
+        return False
+    try:
+        _supabase_client.table("bot_settings").upsert({"key": "slipok_min_amount", "value": str(amount)}).execute()
+        logger.info(f"SlipOK min amount set to {amount}")
+        return True
+    except Exception as e:
+        logger.error(f"Error setting slipok min amount: {e}")
+        return False
+
+def _db_get_merchant_name() -> str:
+    if not _supabase_client:
+        return Config.MERCHANT_NAME or ""
+    try:
+        response = _supabase_client.table("bot_settings").select("value").eq("key", "merchant_name").execute()
+        if response.data and response.data[0].get("value"):
+            return response.data[0].get("value")
+        return Config.MERCHANT_NAME or ""
+    except Exception as e:
+        logger.error(f"Error reading merchant name: {e}")
+        return Config.MERCHANT_NAME or ""
+
+def _db_set_merchant_name(name: str) -> bool:
+    if not _supabase_client:
+        return False
+    try:
+        _supabase_client.table("bot_settings").upsert({"key": "merchant_name", "value": name}).execute()
+        logger.info(f"Merchant name set to {name}")
+        return True
+    except Exception as e:
+        logger.error(f"Error setting merchant name: {e}")
+        return False
+
+async def get_slipok_config() -> dict:
+    return await asyncio.to_thread(_db_get_slipok_config)
+
+async def set_slipok_mode(mode: str) -> bool:
+    return await asyncio.to_thread(_db_set_slipok_mode, mode)
+
+async def set_slipok_api_key(api_key: str) -> bool:
+    return await asyncio.to_thread(_db_set_slipok_api_key, api_key)
+
+async def set_slipok_branch_id(branch_id: str) -> bool:
+    return await asyncio.to_thread(_db_set_slipok_branch_id, branch_id)
+
+async def set_slipok_min_amount(amount: float) -> bool:
+    return await asyncio.to_thread(_db_set_slipok_min_amount, amount)
+
+async def get_merchant_name() -> str:
+    return await asyncio.to_thread(_db_get_merchant_name)
+
+async def set_merchant_name(name: str) -> bool:
+    return await asyncio.to_thread(_db_set_merchant_name, name)
+
+
+def _db_get_merchant_names() -> list[str]:
+    raw_name = _db_get_merchant_name()
+    if not raw_name:
+        return []
+    sep = "|" if "|" in raw_name else ","
+    names = [n.strip() for n in raw_name.split(sep) if n.strip()]
+    return names
+
+def _db_add_merchant_name(name: str) -> bool:
+    names = _db_get_merchant_names()
+    # Case-insensitive deduplication check
+    for existing_name in names:
+        if existing_name.lower() == name.lower():
+            return True
+    names.append(name)
+    new_raw_val = "|".join(names)
+    return _db_set_merchant_name(new_raw_val)
+
+def _db_remove_merchant_name(name: str) -> bool:
+    names = _db_get_merchant_names()
+    # Case-insensitive removal
+    new_names = [n for n in names if n.lower() != name.lower()]
+    if len(new_names) == len(names):
+        return True # Not found, nothing to remove
+    new_raw_val = "|".join(new_names)
+    return _db_set_merchant_name(new_raw_val)
+
+def _db_clear_merchant_names() -> bool:
+    return _db_set_merchant_name("")
+
+
+async def get_merchant_names() -> list[str]:
+    return await asyncio.to_thread(_db_get_merchant_names)
+
+async def add_merchant_name(name: str) -> bool:
+    return await asyncio.to_thread(_db_add_merchant_name, name)
+
+async def remove_merchant_name(name: str) -> bool:
+    return await asyncio.to_thread(_db_remove_merchant_name, name)
+
+async def clear_merchant_names() -> bool:
+    return await asyncio.to_thread(_db_clear_merchant_names)
+
+
+# --- Allowed Accounts Settings Management ---
+
+def _db_get_allowed_accounts() -> list[str]:
+    if not _supabase_client:
+        return []
+    try:
+        response = _supabase_client.table("bot_settings").select("value").eq("key", "allowed_accounts").execute()
+        if response.data and response.data[0].get("value"):
+            raw_acc = response.data[0].get("value")
+            return [a.strip() for a in raw_acc.split("|") if a.strip()]
+        return []
+    except Exception as e:
+        logger.error(f"Error reading allowed accounts: {e}")
+        return []
+
+def _db_add_allowed_account(acc: str) -> bool:
+    if not _supabase_client:
+        return False
+    try:
+        accs = _db_get_allowed_accounts()
+        clean_acc = "".join([c for c in acc if c.isdigit() or c.lower() in ("x", "*", "_")])
+        if not clean_acc:
+            return False
+        if clean_acc in accs:
+            return True
+        accs.append(clean_acc)
+        new_val = "|".join(accs)
+        _supabase_client.table("bot_settings").upsert({"key": "allowed_accounts", "value": new_val}).execute()
+        logger.info(f"Account {clean_acc} added to whitelist.")
+        return True
+    except Exception as e:
+        logger.error(f"Error adding allowed account {acc}: {e}")
+        return False
+
+def _db_remove_allowed_account(acc: str) -> bool:
+    if not _supabase_client:
+        return False
+    try:
+        accs = _db_get_allowed_accounts()
+        clean_acc = "".join([c for c in acc if c.isdigit() or c.lower() in ("x", "*", "_")])
+        if clean_acc not in accs:
+            return True
+        accs.remove(clean_acc)
+        new_val = "|".join(accs)
+        _supabase_client.table("bot_settings").upsert({"key": "allowed_accounts", "value": new_val}).execute()
+        logger.info(f"Account {clean_acc} removed from whitelist.")
+        return True
+    except Exception as e:
+        logger.error(f"Error removing allowed account {acc}: {e}")
+        return False
+
+def _db_clear_allowed_accounts() -> bool:
+    if not _supabase_client:
+        return False
+    try:
+        _supabase_client.table("bot_settings").upsert({"key": "allowed_accounts", "value": ""}).execute()
+        logger.info("Cleared all allowed accounts.")
+        return True
+    except Exception as e:
+        logger.error(f"Error clearing allowed accounts: {e}")
+        return False
+
+
+async def get_allowed_accounts() -> list[str]:
+    return await asyncio.to_thread(_db_get_allowed_accounts)
+
+async def add_allowed_account(acc: str) -> bool:
+    return await asyncio.to_thread(_db_add_allowed_account, acc)
+
+async def remove_allowed_account(acc: str) -> bool:
+    return await asyncio.to_thread(_db_remove_allowed_account, acc)
+
+async def clear_allowed_accounts() -> bool:
+    return await asyncio.to_thread(_db_clear_allowed_accounts)

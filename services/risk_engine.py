@@ -19,7 +19,48 @@ def normalize_ref(ref: str) -> str:
     s = s.replace("O", "0")
     return s
 
-def assess_slip_risk(qr_data: dict | None, ocr_data: dict | None) -> dict:
+def match_account_number(full_acc: str, masked_acc: str) -> bool:
+    """
+    Intelligently checks if a full account number matches a masked account number.
+    Handles wildcard characters (x, X, *, _) and partial matching (e.g. suffix 'x-2850').
+    """
+    full_clean = "".join([c for c in full_acc if c.isdigit()])
+    masked_clean = "".join([c.lower() for c in masked_acc if c.isdigit() or c.lower() in ("x", "*", "_")])
+    
+    if not full_clean or not masked_clean:
+        return False
+        
+    # Case 1: Exact length match (positional matching)
+    if len(full_clean) == len(masked_clean):
+        for f_char, m_char in zip(full_clean, masked_clean):
+            if m_char in ("x", "*", "_"):
+                continue
+            if f_char != m_char:
+                return False
+        return True
+        
+    # Case 2: Different lengths (e.g. OCR only captured last 4 digits '2850' or 'x-2850')
+    masked_digits = "".join([c for c in masked_clean if c.isdigit()])
+    if not masked_digits:
+        return False
+        
+    # Check if digits align as suffix
+    if masked_clean.endswith(masked_digits):
+        return full_clean.endswith(masked_digits)
+    # Check if digits align as prefix
+    if masked_clean.startswith(masked_digits):
+        return full_clean.startswith(masked_digits)
+        
+    # Fallback to substring matching
+    return masked_digits in full_clean
+
+
+def assess_slip_risk(
+    qr_data: dict | None,
+    ocr_data: dict | None,
+    merchant_names: str | list[str] | None = None,
+    allowed_accounts: list[str] | None = None
+) -> dict:
     """
     Assesses the risk of the bank transfer slip.
     Cross-checks the locally parsed QR data with OCR text data from Vision AI.
@@ -65,18 +106,50 @@ def assess_slip_risk(qr_data: dict | None, ocr_data: dict | None) -> dict:
     # Ensure ocr_data is not None for the checks below
     assert ocr_data is not None
 
-    # 1. Receiver Name Verification (Optional - only check if MERCHANT_NAME is set and is not the default template)
+    # 1. Receiver Name Verification
     receiver_name = ocr_data.get("receiver_name") or ""
-    merchant_name = Config.MERCHANT_NAME or ""
-    
-    if merchant_name and merchant_name != "your_merchant_name_here":
+    allowed_names = []
+    if merchant_names is not None:
+        if isinstance(merchant_names, str):
+            allowed_names = [merchant_names]
+        else:
+            allowed_names = list(merchant_names)
+    else:
+        if Config.MERCHANT_NAME and Config.MERCHANT_NAME != "your_merchant_name_here":
+            allowed_names = [Config.MERCHANT_NAME]
+
+    if allowed_names:
         if not receiver_name:
             warnings.append("Receiver name could not be extracted from the slip image.")
             risk_score += 30
-        elif merchant_name.lower() not in receiver_name.lower():
-            # Substring matching (case insensitive)
-            warnings.append(f"Receiver name mismatch. Expected: '{merchant_name}', Found: '{receiver_name}'")
-            risk_score += 60
+        else:
+            # Check if any allowed name is a substring of the receiver name
+            match_found = False
+            for m_name in allowed_names:
+                if m_name.lower() in receiver_name.lower():
+                    match_found = True
+                    break
+            if not match_found:
+                allowed_str = ", ".join([f"'{n}'" for n in allowed_names])
+                warnings.append(f"Receiver name mismatch. Expected one of: {allowed_str}, Found: '{receiver_name}'")
+                risk_score += 60
+
+    # 1.5. Receiver Account Number Verification
+    receiver_acc = ocr_data.get("receiver_account") or ""
+    if allowed_accounts:
+        if not receiver_acc:
+            warnings.append("Receiver account number could not be extracted from the slip.")
+            risk_score += 25
+        else:
+            match_found = False
+            for allowed_acc in allowed_accounts:
+                if match_account_number(allowed_acc, receiver_acc):
+                    match_found = True
+                    break
+            if not match_found:
+                allowed_accs_str = ", ".join([f"'{a}'" for a in allowed_accounts])
+                warnings.append(f"Receiver account number mismatch. Expected one of: {allowed_accs_str}, Found: '{receiver_acc}'")
+                risk_score += 50
 
     # 2. Transaction Reference Mismatch Check
     qr_ref = qr_data.get("trans_ref") if qr_data else None

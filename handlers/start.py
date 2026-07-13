@@ -5,7 +5,12 @@ from config import Config
 from database.supabase_db import (
     add_allowed_group, remove_allowed_group, get_allowed_groups,
     set_maintenance_mode, is_maintenance_mode,
-    get_amount_limits, set_amount_limits
+    get_amount_limits, set_amount_limits,
+    get_slipok_config, set_slipok_mode, set_slipok_api_key,
+    set_slipok_branch_id, set_slipok_min_amount,
+    get_merchant_name, set_merchant_name,
+    get_merchant_names, add_merchant_name, remove_merchant_name, clear_merchant_names,
+    get_allowed_accounts, add_allowed_account, remove_allowed_account, clear_allowed_accounts
 )
 
 logger = logging.getLogger("SlipBot.Handlers.Start")
@@ -229,3 +234,245 @@ async def limit_handler(message: types.Message):
         )
     else:
         await message.reply("❌ เกิดข้อผิดพลาดในการบันทึกข้อมูลช่วงยอดเงินลงฐานข้อมูล")
+
+
+@router.message(Command("merchant"))
+async def merchant_handler(message: types.Message):
+    """Admin command to configure the merchant receiver name (ชื่อผู้รับโอน)."""
+    # Check if the user is an admin
+    if message.from_user.id not in Config.ADMIN_USER_IDS:
+        await message.reply("❌ คุณไม่มีสิทธิ์เข้าถึงคำสั่งนี้")
+        return
+
+    args = message.text.split(maxsplit=2)
+    if len(args) < 2:
+        # Show all current merchant names
+        names = await get_merchant_names()
+        if not names:
+            fallback_name = Config.MERCHANT_NAME or "ไม่ได้ตั้งค่า"
+            names_text = f"• ยังไม่มีร้านค้าตั้งค่าพิเศษ (ใช้ค่าเริ่มต้นจาก .env: `{fallback_name}`)"
+        else:
+            names_text = "\n".join([f"{i}. `{name}`" for i, name in enumerate(names, 1)])
+            
+        await message.reply(
+            f"🏢 **รายชื่อร้านค้าผู้รับโอนที่อนุญาต (Merchant Names):**\n\n"
+            f"{names_text}\n\n"
+            f"💡 **วิธีตั้งค่า:**\n"
+            f"• `/merchant add <ชื่อร้าน>` : เพิ่มร้านค้าที่ยอมรับ\n"
+            f"• `/merchant remove <ชื่อร้าน>` : ลบร้านค้าออกจากรายการ\n"
+            f"• `/merchant clear` : ลบร้านค้าทั้งหมด (กลับไปใช้ค่าใน .env)\n"
+            f"• `/merchant <ชื่อร้าน>` : ตั้งค่าให้ยอมรับชื่อนี้เพียงชื่อเดียว (เขียนทับ)",
+            parse_mode="Markdown"
+        )
+        return
+
+    subcommand = args[1].lower()
+    
+    if subcommand == "add":
+        if len(args) < 3:
+            await message.reply("💡 **วิธีใช้งาน:** `/merchant add <ชื่อร้านค้า>`")
+            return
+        name_to_add = args[2].strip()
+        success = await add_merchant_name(name_to_add)
+        if success:
+            await message.reply(f"✅ **เพิ่มร้านค้าสำเร็จ!**\nเพิ่มร้านค้า: `{name_to_add}` เข้าสู่ระบบแล้ว")
+        else:
+            await message.reply("❌ เกิดข้อผิดพลาดในการบันทึกข้อมูล")
+            
+    elif subcommand == "remove":
+        if len(args) < 3:
+            await message.reply("💡 **วิธีใช้งาน:** `/merchant remove <ชื่อร้านค้า>`")
+            return
+        name_to_remove = args[2].strip()
+        success = await remove_merchant_name(name_to_remove)
+        if success:
+            await message.reply(f"✅ **ลบร้านค้าสำเร็จ!**\nลบร้านค้า: `{name_to_remove}` ออกจากระบบแล้ว")
+        else:
+            await message.reply("❌ เกิดข้อผิดพลาดในการลบข้อมูล")
+            
+    elif subcommand == "clear":
+        success = await clear_merchant_names()
+        if success:
+            fallback = Config.MERCHANT_NAME or "ไม่ได้ตั้งค่า"
+            await message.reply(f"✅ **ล้างรายชื่อร้านค้าทั้งหมดเรียบร้อย!**\nระบบจะกลับไปใช้ค่าเริ่มต้นจาก `.env`: `{fallback}`")
+        else:
+            await message.reply("❌ เกิดข้อผิดพลาดในการล้างข้อมูล")
+            
+    else:
+        # Overwrite behavior: set sole merchant name
+        full_text = message.text.split(maxsplit=1)[1].strip()
+        success = await set_merchant_name(full_text)
+        if success:
+            await message.reply(
+                f"✅ **ปรับปรุงชื่อร้านค้าผู้รับโอนสำเร็จ (เขียนทับ)!**\n\n"
+                f"• ชื่อร้านค้าใหม่: `{full_text}`",
+                parse_mode="Markdown"
+            )
+        else:
+            await message.reply("❌ เกิดข้อผิดพลาดในการเขียนทับข้อมูล")
+
+
+@router.message(Command("slipok"))
+async def slipok_handler(message: types.Message):
+    """Admin command to configure SlipOK verification API."""
+    # Check if the user is an admin
+    if message.from_user.id not in Config.ADMIN_USER_IDS:
+        await message.reply("❌ คุณไม่มีสิทธิ์เข้าถึงคำสั่งนี้")
+        return
+
+    args = message.text.split()
+    cfg = await get_slipok_config()
+    
+    # helper function to mask API keys
+    def mask_key(k: str) -> str:
+        if not k:
+            return "ไม่ได้ตั้งค่า"
+        if len(k) <= 8:
+            return "***"
+        return f"{k[:4]}***{k[-4:]}"
+
+    if len(args) < 2:
+        # Show current configuration status
+        mode_icons = {
+            "smart": "🧠 **Smart (ตรวจผ่าน Risk Engine ก่อน ค่อยส่ง SlipOK)**",
+            "always": "🔒 **Always (ตรวจสอบทุกใบผ่าน SlipOK)**",
+            "off": "❌ **Off (ปิดใช้งาน SlipOK / ใช้ Vision AI OCR ปกติ)**"
+        }
+        current_mode = mode_icons.get(cfg["mode"], cfg["mode"])
+        
+        await message.reply(
+            f"⚙️ **ตั้งค่าระบบ SlipOK Verification:**\n\n"
+            f"• **โหมดปัจจุบัน**: {current_mode}\n"
+            f"• **API Key**: `{mask_key(cfg['api_key'])}`\n"
+            f"• **Branch ID (รหัสร้าน)**: `{cfg['branch_id'] or 'ไม่ได้ตั้งค่า'}`\n"
+            f"• **ยอดตรวจขั้นต่ำ (Smart Mode)**: `{cfg['min_amount']:,.2f} THB`\n\n"
+            f"💡 **คำสั่งตั้งค่า:**\n"
+            f"• `/slipok mode <smart|always|off>` : สลับโหมดทำงาน\n"
+            f"• `/slipok setkey <API_KEY>` : ตั้งค่า API Key\n"
+            f"• `/slipok setbranch <BRANCH_ID>` : ตั้งค่ารหัสร้าน (Branch ID)\n"
+            f"• `/slipok minamount <จำนวนเงิน>` : ตั้งยอดเงินขั้นต่ำบังคับตรวจในโหมด Smart",
+            parse_mode="Markdown"
+        )
+        return
+
+    subcommand = args[1].lower()
+    
+    if subcommand == "mode":
+        if len(args) < 3:
+            await message.reply("💡 **วิธีใช้งาน:** `/slipok mode <smart|always|off>`")
+            return
+        mode = args[2].lower()
+        if mode not in ["smart", "always", "off"]:
+            await message.reply("❌ โหมดไม่ถูกต้อง กรุณาเลือก: `smart`, `always` หรือ `off`")
+            return
+        success = await set_slipok_mode(mode)
+        if success:
+            await message.reply(f"✅ **ปรับปรุงโหมด SlipOK สำเร็จ!**\nโหมดใหม่: `{mode.upper()}`")
+        else:
+            await message.reply("❌ เกิดข้อผิดพลาดในการบันทึกโหมดการทำงาน")
+            
+    elif subcommand == "setkey":
+        if len(args) < 3:
+            await message.reply("💡 **วิธีใช้งาน:** `/slipok setkey <API_KEY>`")
+            return
+        key = args[2].strip()
+        success = await set_slipok_api_key(key)
+        if success:
+            await message.reply(f"✅ **บันทึก API Key สำเร็จ!**\nรหัสคีย์: `{mask_key(key)}`")
+        else:
+            await message.reply("❌ เกิดข้อผิดพลาดในการบันทึก API Key")
+            
+    elif subcommand == "setbranch":
+        if len(args) < 3:
+            await message.reply("💡 **วิธีใช้งาน:** `/slipok setbranch <BRANCH_ID>`")
+            return
+        branch = args[2].strip()
+        success = await set_slipok_branch_id(branch)
+        if success:
+            await message.reply(f"✅ **บันทึก Branch ID สำเร็จ!**\nรหัสร้าน: `{branch}`")
+        else:
+            await message.reply("❌ เกิดข้อผิดพลาดในการบันทึก Branch ID")
+            
+    elif subcommand == "minamount":
+        if len(args) < 3:
+            await message.reply("💡 **วิธีใช้งาน:** `/slipok minamount <ยอดเงิน>`")
+            return
+        try:
+            amount = float(args[2])
+            if amount < 0:
+                raise ValueError
+        except ValueError:
+            await message.reply("❌ ยอดเงินไม่ถูกต้อง กรุณากรอกเป็นตัวเลขเชิงบวก")
+            return
+            
+        success = await set_slipok_min_amount(amount)
+        if success:
+            await message.reply(f"✅ **ปรับปรุงยอดตรวจขั้นต่ำสำเร็จ!**\nในโหมด Smart บอทจะบังคับตรวจ SlipOK เสมอเมื่อยอดเงินโอนตั้งแต่ `{amount:,.2f} THB` ขึ้นไป")
+        else:
+            await message.reply("❌ เกิดข้อผิดพลาดในการบันทึกยอดเงินขั้นต่ำ")
+            
+    else:
+        await message.reply("❌ คำสั่งย่อยไม่ถูกต้อง กรุณากรอกคำสั่งให้ถูกต้องตามคู่มือการใช้งานของ `/slipok`")
+
+
+@router.message(Command("account"))
+async def account_handler(message: types.Message):
+    """Admin command to configure whitelisted allowed receiver account numbers."""
+    # Check if the user is an admin
+    if message.from_user.id not in Config.ADMIN_USER_IDS:
+        await message.reply("❌ คุณไม่มีสิทธิ์เข้าถึงคำสั่งนี้")
+        return
+
+    args = message.text.split(maxsplit=2)
+    if len(args) < 2:
+        # Show all current whitelisted accounts
+        accounts = await get_allowed_accounts()
+        if not accounts:
+            accounts_text = "• ยังไม่ได้ตั้งค่าเลขบัญชีผู้รับโอนเพื่อตรวจสอบ (ปิดการสแกนเช็คเลขบัญชี)"
+        else:
+            accounts_text = "\n".join([f"{i}. `{acc}`" for i, acc in enumerate(accounts, 1)])
+            
+        await message.reply(
+            f"💳 **รายชื่อเลขบัญชีผู้รับโอนที่ได้รับอนุญาต (Allowed Accounts):**\n\n"
+            f"{accounts_text}\n\n"
+            f"💡 **วิธีตั้งค่า:**\n"
+            f"• `/account add <เลขบัญชี>` : เพิ่มเลขบัญชีที่ยอมรับ\n"
+            f"• `/account remove <เลขบัญชี>` : ลบเลขบัญชีออกจากรายการ\n"
+            f"• `/account clear` : ล้างบัญชีทั้งหมด (ปิดการตรวจสอบเลขบัญชี)",
+            parse_mode="Markdown"
+        )
+        return
+
+    subcommand = args[1].lower()
+    
+    if subcommand == "add":
+        if len(args) < 3:
+            await message.reply("💡 **วิธีใช้งาน:** `/account add <เลขบัญชี>`")
+            return
+        acc_to_add = args[2].strip()
+        success = await add_allowed_account(acc_to_add)
+        if success:
+            await message.reply(f"✅ **เพิ่มเลขบัญชีสำเร็จ!**\nเพิ่มเลขบัญชี: `{acc_to_add}` เข้าสู่ระบบแล้ว")
+        else:
+            await message.reply("❌ เกิดข้อผิดพลาดในการบันทึกข้อมูล (กรุณากรอกเฉพาะตัวเลขและเครื่องหมาย wildcard เช่น x)")
+            
+    elif subcommand == "remove":
+        if len(args) < 3:
+            await message.reply("💡 **วิธีใช้งาน:** `/account remove <เลขบัญชี>`")
+            return
+        acc_to_remove = args[2].strip()
+        success = await remove_allowed_account(acc_to_remove)
+        if success:
+            await message.reply(f"✅ **ลบเลขบัญชีสำเร็จ!**\nลบเลขบัญชี: `{acc_to_remove}` ออกจากระบบแล้ว")
+        else:
+            await message.reply("❌ เกิดข้อผิดพลาดในการลบข้อมูล")
+            
+    elif subcommand == "clear":
+        success = await clear_allowed_accounts()
+        if success:
+            await message.reply("✅ **ล้างรายชื่อเลขบัญชีทั้งหมดเรียบร้อย!**\nระบบจะข้ามการตรวจสอบเลขบัญชีผู้รับโอน")
+        else:
+            await message.reply("❌ เกิดข้อผิดพลาดในการล้างข้อมูล")
+            
+    else:
+        await message.reply("❌ คำสั่งย่อยไม่ถูกต้อง กรุณากรอกคำสั่งให้ถูกต้องตามคู่มือการใช้งานของ `/account`")

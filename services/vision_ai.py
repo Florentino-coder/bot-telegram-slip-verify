@@ -17,6 +17,7 @@ Output JSON Format:
   "trans_ref": "Transaction ID, Reference Number, or เลขที่อ้างอิง. Strip all spaces.",
   "sender_name": "Sender name. Often starts with 'จาก' or 'From'.",
   "receiver_name": "Receiver name. Often starts with 'ไปยัง' or 'To'.",
+  "receiver_account": "Receiver account number as printed on the slip (e.g., xxx-x-x1234-x or x-1234 or a phone number for PromptPay). Null if not found.",
   "amount": "The transfer amount as a float number. Remove any comma.",
   "trans_date": "Transaction date and time in ISO 8601 format if possible (YYYY-MM-DD HH:MM:SS), otherwise as a string."
 }

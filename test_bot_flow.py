@@ -19,6 +19,9 @@ from handlers.slip import process_slip_image
 # Mock maintenance mode check to prevent database calls during test execution
 handlers.slip.is_maintenance_mode = AsyncMock(return_value=False)
 handlers.slip.get_amount_limits = AsyncMock(return_value=(100.0, 999.0))
+handlers.slip.get_merchant_names = AsyncMock(return_value=["Antigravity Merchant"])
+handlers.slip.get_allowed_accounts = AsyncMock(return_value=[])
+handlers.slip.get_slipok_config = AsyncMock(return_value={"mode": "off", "api_key": "", "branch_id": "", "min_amount": 500.0})
 
 
 async def run_integration_test():

@@ -6,12 +6,14 @@ from aiogram.fsm.context import FSMContext
 from config import Config
 from database.supabase_db import (
     check_duplicate, log_transaction, is_group_allowed, get_allowed_groups,
-    is_maintenance_mode, get_amount_limits
+    is_maintenance_mode, get_amount_limits,
+    get_slipok_config, get_merchant_names, get_allowed_accounts
 )
 from services.qr_decoder import decode_qr_from_bytes
 from services.vision_ai import extract_slip_details
 from services.risk_engine import assess_slip_risk
 from services.bank_codes import get_bank_name
+from services.slipok import verify_slip_via_slipok
 
 logger = logging.getLogger("SlipBot.Handlers.Slip")
 router = Router()
@@ -152,20 +154,23 @@ async def process_slip_image(message: types.Message, bot: Bot):
     processing_msg = None
     
     try:
-        # 1. Download photo from Telegram to memory
+        # 1. Fetch configurations from database (merchant_names, allowed_accounts and slipok_config)
+        merchant_names = await get_merchant_names()
+        allowed_accounts = await get_allowed_accounts()
+        slipok_config = await get_slipok_config()
+        
+        # 2. Download photo from Telegram to memory
         photo_file = io.BytesIO()
-        # Grab the highest resolution photo
         photo = message.photo[-1]
         await bot.download(photo, destination=photo_file)
         image_bytes = photo_file.getvalue()
         
-        # 2. Local QR Code Scanning
+        # 3. Local QR Code Scanning
         qr_data = decode_qr_from_bytes(image_bytes)
         qr_ref = qr_data.get("trans_ref") if qr_data else None
         
         # Determine if we should send a processing message
         if qr_ref:
-            # If QR is detected, it is definitely a slip. Send processing message.
             processing_msg = await message.reply("⏳ **กำลังดาวน์โหลดและประมวลผลสลิปโอนเงินของคุณ...**\nกรุณารอสักครู่")
             
             # Check duplicate
@@ -179,16 +184,13 @@ async def process_slip_image(message: types.Message, bot: Bot):
                 )
                 return
         else:
-            # If QR is not detected:
             if is_group:
-                # In group chats, if no QR, check if OCR is enabled. If not, silently ignore.
                 if not Config.ENABLE_OCR_FALLBACK:
                     return
             else:
-                # In DM, send processing message immediately
                 processing_msg = await message.reply("⏳ **กำลังดาวน์โหลดและประมวลผลรูปภาพของคุณ...**\nกรุณารอสักครู่")
 
-        # 3. Fallback or Vision OCR parsing
+        # 4. Fallback or Vision OCR parsing
         ocr_data = None
         if qr_ref or Config.ENABLE_OCR_FALLBACK:
             ocr_data = await extract_slip_details(image_bytes)
@@ -196,22 +198,18 @@ async def process_slip_image(message: types.Message, bot: Bot):
             # In group chats, if no QR, verify if it's actually a slip before replying
             if is_group and not qr_ref:
                 if not ocr_data:
-                    # Silently ignore unreadable photos in group chats
                     return
                     
-                # Check for slip indicator keywords in the extracted text
                 text_to_check = f"{ocr_data.get('sender_name') or ''} {ocr_data.get('receiver_name') or ''} {ocr_data.get('trans_ref') or ''}"
                 keywords = ["โอน", "สำเร็จ", "บาท", "thb", "transfer", "successful", "ref", "อ้างอิง"]
                 is_slip = any(kw in text_to_check.lower() for kw in keywords) or (ocr_data.get("amount") is not None and ocr_data.get("amount") > 0)
                 
                 if not is_slip:
-                    # Silently ignore general photos in group chats
                     return
                     
-                # It's a slip! Send a processing message now that we want to reply
                 processing_msg = await message.reply("⏳ **กำลังตรวจสอบประมวลผลสลิปโอนเงิน...**")
 
-            # Double check duplicate against OCR trans_ref if QR was missing but OCR found it
+            # Check duplicate against OCR trans_ref
             if ocr_data and ocr_data.get("trans_ref") and not qr_ref:
                 ocr_ref = ocr_data["trans_ref"]
                 is_dup = await check_duplicate(ocr_ref)
@@ -227,10 +225,151 @@ async def process_slip_image(message: types.Message, bot: Bot):
                         await message.reply(dup_text, parse_mode="Markdown")
                     return
 
-        # 4. Risk Assessment (Cross-checking details)
-        risk_result = assess_slip_risk(qr_data, ocr_data)
+        # 5. Routing to SlipOK (Smart/Always/Off)
+        use_slipok = False
+        slipok_mode = slipok_config.get("mode", "off")
+        slipok_key = slipok_config.get("api_key", "")
+        slipok_branch = slipok_config.get("branch_id", "")
         
-        # If the risk analysis suggests unsafe
+        if slipok_mode in ["smart", "always"] and slipok_key and slipok_branch:
+            if slipok_mode == "always":
+                use_slipok = True
+            elif slipok_mode == "smart":
+                # Smart routing conditions:
+                # 1. No QR code detected locally
+                no_qr = qr_ref is None
+                # 2. Risk engine flags warnings
+                risk_eval = assess_slip_risk(qr_data, ocr_data, merchant_names, allowed_accounts)
+                is_suspicious = not risk_eval["is_safe"]
+                # 3. High value transfer
+                is_high_value = False
+                if ocr_data and ocr_data.get("amount") is not None:
+                    is_high_value = ocr_data["amount"] >= slipok_config.get("min_amount", 500.0)
+                
+                if no_qr or is_suspicious or is_high_value:
+                    use_slipok = True
+                    logger.info(f"Smart Mode: Routing slip to SlipOK. (no_qr={no_qr}, is_suspicious={is_suspicious}, is_high_value={is_high_value})")
+
+        if use_slipok:
+            logger.info("Calling SlipOK verification API...")
+            verify_res = await verify_slip_via_slipok(
+                api_key=slipok_key,
+                branch_id=slipok_branch,
+                qr_payload=qr_data.get("raw_payload") if qr_data else None,
+                image_bytes=image_bytes
+            )
+            
+            if verify_res is not None:
+                # If verify_res is not None, we process SlipOK response
+                if verify_res.get("success"):
+                    # Check receiver name and account safety after SlipOK success
+                    if merchant_names:
+                        match_found = False
+                        for m_name in merchant_names:
+                            if m_name.lower() in verify_res["receiver_name"].lower():
+                                match_found = True
+                                break
+                        if not match_found:
+                            error_text = (
+                                f"❌ **ตรวจสอบสลิปไม่ผ่าน!**\n\n"
+                                f"ผู้รับโอนบนสลิป (`{verify_res['receiver_name']}`) ไม่ตรงกับชื่อร้านค้าที่ได้รับอนุญาต"
+                            )
+                            if processing_msg:
+                                await processing_msg.edit_text(error_text, parse_mode="Markdown")
+                            else:
+                                await message.reply(error_text, parse_mode="Markdown")
+                            return
+
+                    if allowed_accounts and verify_res.get("receiver_account"):
+                        match_found = False
+                        for allowed_acc in allowed_accounts:
+                            from services.risk_engine import match_account_number
+                            if match_account_number(allowed_acc, verify_res["receiver_account"]):
+                                match_found = True
+                                break
+                        if not match_found:
+                            error_text = (
+                                f"❌ **ตรวจสอบสลิปไม่ผ่าน!**\n\n"
+                                f"เลขที่บัญชีผู้รับโอนบนสลิป (`{verify_res['receiver_account']}`) ไม่ตรงกับบัญชีของร้านค้าที่ได้รับอนุญาต"
+                            )
+                            if processing_msg:
+                                await processing_msg.edit_text(error_text, parse_mode="Markdown")
+                            else:
+                                await message.reply(error_text, parse_mode="Markdown")
+                            return
+
+                    # Success from bank! Check duplicate in database using SlipOK transRef
+                    s_ref = verify_res["trans_ref"]
+                    is_dup = await check_duplicate(s_ref)
+                    if is_dup:
+                        dup_text = (
+                            f"⚠️ **ตรวจพบการใช้สลิปซ้ำ!**\n\n"
+                            f"❌ รหัสอ้างอิง: `{s_ref}`\n"
+                            "สลิปใบนี้เคยได้รับการอนุมัติในระบบไปแล้ว ไม่สามารถใช้งานซ้ำได้"
+                        )
+                        if processing_msg:
+                            await processing_msg.edit_text(dup_text, parse_mode="Markdown")
+                        else:
+                            await message.reply(dup_text, parse_mode="Markdown")
+                        return
+
+                    # Log to database
+                    db_logged = await log_transaction(
+                        trans_ref=s_ref,
+                        sender_name=verify_res["sender_name"],
+                        receiver_name=verify_res["receiver_name"],
+                        amount=verify_res["amount"],
+                        trans_date=verify_res["trans_date"],
+                        raw_ocr=verify_res["raw"]
+                    )
+                    db_status = "⚙️💾✅" if db_logged else "⚙️💾❌"
+                    
+                    # Formatting only SlipOK data
+                    s_bank = get_bank_name(verify_res["sending_bank"])
+                    s_sender = mask_name(verify_res["sender_name"])
+                    
+                    success_text = (
+                        f"✅ **สลิปผ่านการตรวจสอบ (ยืนยันผ่านธนาคาร)** {db_status}\n\n"
+                        f"🏦 **ธนาคารต้นทาง**: `{s_bank}`\n"
+                        f"👤 **ผู้โอน**: `{s_sender}`\n"
+                        f"🏢 **ผู้รับโอน**: `{verify_res['receiver_name']}`\n"
+                        f"💵 **จำนวนเงิน**: `{verify_res['amount']:,.2f} THB`\n"
+                        f"📅 **วันเวลา**: `{verify_res['trans_date']}`\n"
+                        f"🔑 **รหัสอ้างอิง**: `{s_ref}`\n\n"
+                        f"🔎 *ตรวจสอบและยืนยันข้อมูลโดยตรงกับระบบธนาคารผ่าน SlipOK*"
+                    )
+                    
+                    if processing_msg:
+                        await processing_msg.edit_text(success_text, parse_mode="Markdown")
+                    else:
+                        await message.reply(success_text, parse_mode="Markdown")
+                        
+                    logger.info(f"Verified slip via SlipOK successfully: {s_ref} | Amount: {verify_res['amount']}")
+                    return
+                else:
+                    # SlipOK returned success = False.
+                    # We should check the error code. If it's a configuration or quota error,
+                    # we do NOT reject the slip; we fall back to local validation.
+                    err_code = verify_res.get("error_code")
+                    if err_code in [1021, 1022]:
+                        logger.warning(f"SlipOK API configuration/billing issue (code {err_code}). Falling back to local OCR verification.")
+                    else:
+                        # Genuine verification failure (invalid slip, duplicate slip in SlipOK, wrong amount, etc.)
+                        error_text = (
+                            f"🚨 **ตรวจสอบสลิปไม่ผ่าน!**\n\n"
+                            f"**ปัญหาที่พบ:** {verify_res['message']}\n\n"
+                            f"กรุณาส่งรูปภาพสลิปที่ถูกต้อง หรือติดต่อเจ้าหน้าที่หากมีข้อสงสัย"
+                        )
+                        if processing_msg:
+                            await processing_msg.edit_text(error_text, parse_mode="Markdown")
+                        else:
+                            await message.reply(error_text, parse_mode="Markdown")
+                        return
+            else:
+                logger.warning("SlipOK API returned empty response or HTTP error. Falling back to local verification.")
+
+        # 6. Fallback to Local QR + Vision AI OCR
+        risk_result = assess_slip_risk(qr_data, ocr_data, merchant_names, allowed_accounts)
         disclaimer = (
             "\n\n📢 **คำแนะนำ** : QR ใช้งานได้ (โอกาสจริง 70%) เช็คบัญชีเพื่อความถูกต้อง"
         )
@@ -250,14 +389,13 @@ async def process_slip_image(message: types.Message, bot: Bot):
                 await message.reply(error_text, parse_mode="Markdown")
             return
 
-        # At this point, slip is valid and safe. Let's log it.
+        # Safe slip: Log and reply using local OCR/QR
         trans_ref = qr_ref or (ocr_data.get("trans_ref") if ocr_data else None) or "UNKNOWN_REF"
         sender_name = ocr_data.get("sender_name") if ocr_data else "ไม่ระบุผู้ส่ง"
         receiver_name = ocr_data.get("receiver_name") if ocr_data else "ไม่ระบุผู้รับ"
         amount = ocr_data.get("amount") if ocr_data else 0.0
         trans_date = ocr_data.get("trans_date") if ocr_data else None
         
-        # Log to Supabase Database
         db_logged = await log_transaction(
             trans_ref=trans_ref,
             sender_name=sender_name,
@@ -268,9 +406,7 @@ async def process_slip_image(message: types.Message, bot: Bot):
         )
         
         db_status = "⚙️💾✅" if db_logged else "⚙️💾❌"
-        masked_sender = mask_name(sender_name)
         
-        # 5. Response Message
         if qr_data:
             qr_bank = get_bank_name(qr_data.get("sending_bank"))
             qr_ref_str = qr_data.get("trans_ref")
@@ -284,7 +420,6 @@ async def process_slip_image(message: types.Message, bot: Bot):
                 f"🔎 **การตรวจสอบ QR**: `⚠️ น่าสงสัย / อาจจะปลอมแปลง - ตรวจไม่พบ QR Code`"
             )
 
-        # Check amount limits warning
         amount_suffix = ""
         try:
             min_limit, max_limit = await get_amount_limits()
@@ -310,13 +445,12 @@ async def process_slip_image(message: types.Message, bot: Bot):
         else:
             await message.reply(success_text, parse_mode="Markdown")
             
-        logger.info(f"Verified slip successfully: {trans_ref} | Amount: {amount}")
-        
+        logger.info(f"Verified slip successfully (local fallback): {trans_ref} | Amount: {amount}")
+
     except Exception as e:
         logger.error(f"Error processing slip upload: {e}", exc_info=True)
         err_text = "❌ **เกิดข้อผิดพลาดภายในระบบ**\nไม่สามารถประมวลผลรูปภาพได้ในขณะนี้ กรุณาลองใหม่อีกครั้ง"
         
-        # In group chats, if no processing message was sent, fail silently to avoid spam
         if is_group and not processing_msg:
             return
             
