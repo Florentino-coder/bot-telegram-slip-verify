@@ -332,7 +332,7 @@ async def slipok_handler(message: types.Message):
             return "***"
         return f"{k[:4]}***{k[-4:]}"
 
-    if len(args) < 2:
+    if len(args) < 2 or args[1].lower() == "listkeys":
         # Show current configurations & list of multiple credentials with live remaining quota
         mode_icons = {
             "smart": "🧠 **Smart (ตรวจผ่าน Risk Engine ก่อน ค่อยส่ง SlipOK)**",
