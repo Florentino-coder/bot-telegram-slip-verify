@@ -158,11 +158,32 @@ async def process_slip_image(message: types.Message, bot: Bot):
     rand_hex = secrets.token_hex(3).upper()
     slip_id = f"SLIP-{date_str}-{rand_hex}"
 
+    processing_msg = None
+
+    # Helper function that automatically appends the Slip ID footer
+    async def reply_message(text: str, force_new=False, parse_mode="Markdown"):
+        nonlocal processing_msg
+        footer = f"\n\n🆔 **Slip ID**: `{slip_id}`"
+        full_text = text + footer
+        if processing_msg and not force_new:
+            try:
+                return await processing_msg.edit_text(full_text, parse_mode=parse_mode)
+            except Exception as edit_err:
+                logger.warning(f"Failed to edit message, sending new: {edit_err}")
+                sent_msg = await message.reply(full_text, parse_mode=parse_mode)
+                processing_msg = sent_msg
+                return sent_msg
+        else:
+            sent_msg = await message.reply(full_text, parse_mode=parse_mode)
+            if not processing_msg:
+                processing_msg = sent_msg
+            return sent_msg
+
     # Rate Limiting Check (20 images/minute/user)
     if not check_rate_limit(message.from_user.id, limit=20, period=60):
-        await message.reply(
+        await reply_message(
             "🚨 **กรุณาอย่าส่งสแปมภาพสลิป!**\nจำกัดไม่เกิน 20 รูปต่อนาที กรุณารอ 1 นาทีแล้วลองใหม่อีกครั้ง",
-            parse_mode="Markdown"
+            force_new=True
         )
         elapsed_ms = int((time.time() - start_time) * 1000)
         await log_slip_log({
@@ -272,8 +293,6 @@ async def process_slip_image(message: types.Message, bot: Bot):
         }
         await log_slip_log(log_data)
 
-    processing_msg = None
-    
     try:
         # 1. Fetch configurations from database (merchant_names, allowed_accounts, slipok_config, and slipok_credentials)
         merchant_names = await get_merchant_names()
@@ -296,7 +315,7 @@ async def process_slip_image(message: types.Message, bot: Bot):
                 "⚠️ **ตรวจพบการส่งรูปภาพสลิปซ้ำซ้อน!**\n\n"
                 "ภาพสลิปใบนี้เคยได้รับการอนุมัติในระบบไปเรียบร้อยแล้ว ไม่สามารถส่งซ้ำได้เพื่อความปลอดภัย"
             )
-            await message.reply(dup_text, parse_mode="Markdown")
+            await reply_message(dup_text, force_new=True)
             audit_checks["duplicate"] = True
             risk_score = 100
             await save_audit_log("FAIL", "Duplicate image content (same image hash)", "DUPLICATE_HASH")
@@ -316,11 +335,10 @@ async def process_slip_image(message: types.Message, bot: Bot):
             # Check duplicate
             is_dup = await check_duplicate(qr_ref)
             if is_dup:
-                await processing_msg.edit_text(
+                await reply_message(
                     f"⚠️ **ตรวจพบการใช้สลิปซ้ำ!**\n\n"
                     f"❌ รหัสอ้างอิง: `{qr_ref}`\n"
-                    "สลิปใบนี้เคยได้รับการตรวจสอบและอนุมัติในระบบไปแล้ว ไม่สามารถใช้งานซ้ำได้เพื่อป้องกันการทุจริต",
-                    parse_mode="Markdown"
+                    "สลิปใบนี้เคยได้รับการตรวจสอบและอนุมัติในระบบไปแล้ว ไม่สามารถใช้งานซ้ำได้เพื่อป้องกันการทุจริต"
                 )
                 audit_checks["duplicate"] = True
                 risk_score = 100
@@ -378,10 +396,7 @@ async def process_slip_image(message: types.Message, bot: Bot):
                         f"❌ รหัสอ้างอิง: `{ocr_ref}`\n"
                         "สลิปใบนี้เคยได้รับการอนุมัติในระบบไปแล้ว ไม่สามารถใช้งานซ้ำได้"
                     )
-                    if processing_msg:
-                        await processing_msg.edit_text(dup_text, parse_mode="Markdown")
-                    else:
-                        await message.reply(dup_text, parse_mode="Markdown")
+                    await reply_message(dup_text)
                     audit_checks["duplicate"] = True
                     risk_score = 100
                     await save_audit_log("FAIL", f"Duplicate transaction reference: {ocr_ref}", "DUPLICATE")
@@ -486,11 +501,7 @@ async def process_slip_image(message: types.Message, bot: Bot):
                                 f"❌ **ตรวจสอบสลิปไม่ผ่าน!**\n\n"
                                 f"ผู้รับโอนบนสลิป (`{verify_res['receiver_name']}`) ไม่ตรงกับชื่อร้านค้าที่ได้รับอนุญาต"
                             )
-                            if processing_msg:
-                                await processing_msg.edit_text(error_text, parse_mode="Markdown")
-                            else:
-                                await message.reply(error_text, parse_mode="Markdown")
-                            
+                            await reply_message(error_text)
                             risk_score = 100
                             await save_audit_log("FAIL", f"Receiver name mismatch: {verify_res['receiver_name']}", "RECEIVER_MISMATCH")
                             return
@@ -509,11 +520,7 @@ async def process_slip_image(message: types.Message, bot: Bot):
                                 f"❌ **ตรวจสอบสลิปไม่ผ่าน!**\n\n"
                                 f"เลขที่บัญชีผู้รับโอนบนสลิป (`{verify_res['receiver_account']}`) ไม่ตรงกับบัญชีของร้านค้าที่ได้รับอนุญาต"
                             )
-                            if processing_msg:
-                                await processing_msg.edit_text(error_text, parse_mode="Markdown")
-                            else:
-                                await message.reply(error_text, parse_mode="Markdown")
-                            
+                            await reply_message(error_text)
                             risk_score = 100
                             await save_audit_log("FAIL", f"Receiver account mismatch: {verify_res['receiver_account']}", "ACCOUNT_MISMATCH")
                             return
@@ -527,11 +534,7 @@ async def process_slip_image(message: types.Message, bot: Bot):
                             f"❌ รหัสอ้างอิง: `{s_ref}`\n"
                             "สลิปใบนี้เคยได้รับการอนุมัติในระบบไปแล้ว ไม่สามารถใช้งานซ้ำได้"
                         )
-                        if processing_msg:
-                            await processing_msg.edit_text(dup_text, parse_mode="Markdown")
-                        else:
-                            await message.reply(dup_text, parse_mode="Markdown")
-                        
+                        await reply_message(dup_text)
                         audit_checks["duplicate"] = True
                         risk_score = 100
                         await save_audit_log("FAIL", f"Duplicate reference check: {s_ref}", "DUPLICATE")
@@ -563,11 +566,7 @@ async def process_slip_image(message: types.Message, bot: Bot):
                         f"🔎 *ตรวจสอบและยืนยันข้อมูลโดยตรงกับระบบธนาคารผ่าน SlipOK*"
                     )
                     
-                    if processing_msg:
-                        await processing_msg.edit_text(success_text, parse_mode="Markdown")
-                    else:
-                        await message.reply(success_text, parse_mode="Markdown")
-                        
+                    await reply_message(success_text)
                     logger.info(f"Verified slip via SlipOK successfully: {s_ref} | Amount: {verify_res['amount']}")
                     
                     # Fill audit checks
@@ -586,11 +585,7 @@ async def process_slip_image(message: types.Message, bot: Bot):
                             f"**ปัญหาที่พบ:** {verify_res['message']}\n\n"
                             f"กรุณาส่งรูปภาพสลิปที่ถูกต้อง หรือติดต่อเจ้าหน้าที่หากมีข้อสงสัย"
                         )
-                        if processing_msg:
-                            await processing_msg.edit_text(error_text, parse_mode="Markdown")
-                        else:
-                            await message.reply(error_text, parse_mode="Markdown")
-                        
+                        await reply_message(error_text)
                         risk_score = 100
                         await save_audit_log("FAIL", f"SlipOK genuine failure: {verify_res['message']}", str(err_code) if err_code else "SLIPOK_FAILURE")
                         return
@@ -610,10 +605,7 @@ async def process_slip_image(message: types.Message, bot: Bot):
                     "เนื่องจากระบบยืนยันสลิปผ่านธนาคารอัตโนมัติไม่พร้อมใช้งานในขณะนี้ และสลิปโอนเงินไม่ชัดเจน/น่าสงสัย "
                     "กรุณารอเจ้าหน้าที่ตรวจสอบยอดเงินโอนเข้าโดยตรงเพื่อความถูกต้อง"
                 )
-                if processing_msg:
-                    await processing_msg.edit_text(err_text, parse_mode="Markdown")
-                else:
-                    await message.reply(err_text, parse_mode="Markdown")
+                await reply_message(err_text)
                 await save_audit_log("FAIL", failure_reason, error_code)
                 return
 
@@ -625,10 +617,7 @@ async def process_slip_image(message: types.Message, bot: Bot):
                 "🚨 **ตรวจสอบสลิปไม่สำเร็จ (ต้องได้รับการตรวจสอบโดยเจ้าหน้าที่)**\n\n"
                 "ระบบไม่สามารถอ่านข้อความบนภาพสลิปได้ชั่วคราว กรุณารอเจ้าหน้าที่ตรวจสอบ หรือลองส่งสลิปใหม่อีกครั้ง"
             )
-            if processing_msg:
-                await processing_msg.edit_text(err_text, parse_mode="Markdown")
-            else:
-                await message.reply(err_text, parse_mode="Markdown")
+            await reply_message(err_text)
             await save_audit_log("FAIL", f"Local OCR failed: {ocr_data['error']}", ocr_data.get("error_code", "OCR_ERROR"))
             return
 
@@ -646,11 +635,7 @@ async def process_slip_image(message: types.Message, bot: Bot):
                 "กรุณาส่งรูปภาพสลิปที่ถูกต้อง หรือติดต่อเจ้าหน้าที่หากข้อมูลดังกล่าวมีความผิดพลาด"
                 f"{disclaimer}"
             )
-            if processing_msg:
-                await processing_msg.edit_text(error_text, parse_mode="Markdown")
-            else:
-                await message.reply(error_text, parse_mode="Markdown")
-                
+            await reply_message(error_text)
             await save_audit_log("FAIL", f"Risk engine warnings: {', '.join(risk_result['warnings'])}", "SUSPICIOUS")
             return
 
@@ -711,11 +696,7 @@ async def process_slip_image(message: types.Message, bot: Bot):
             f"{disclaimer}"
         )
         
-        if processing_msg:
-            await processing_msg.edit_text(success_text, parse_mode="Markdown")
-        else:
-            await message.reply(success_text, parse_mode="Markdown")
-            
+        await reply_message(success_text)
         logger.info(f"Verified slip successfully (local fallback): {trans_ref} | Amount: {amount}")
         await save_audit_log("PASS")
 
@@ -726,13 +707,7 @@ async def process_slip_image(message: types.Message, bot: Bot):
         if is_group and not processing_msg:
             pass
         else:
-            if processing_msg:
-                await processing_msg.edit_text(err_text, parse_mode="Markdown")
-            else:
-                await message.reply(err_text, parse_mode="Markdown")
+            await reply_message(err_text)
                 
         risk_score = 100
         await save_audit_log("ERROR", str(e), "INTERNAL_ERROR")
-
-
-
