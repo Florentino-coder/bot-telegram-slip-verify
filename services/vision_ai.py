@@ -19,7 +19,10 @@ Output JSON Format:
   "receiver_name": "Receiver name. Often starts with 'ไปยัง' or 'To'.",
   "receiver_account": "Receiver account number as printed on the slip (e.g., xxx-x-x1234-x or x-1234 or a phone number for PromptPay). Null if not found.",
   "amount": "The transfer amount as a float number. Remove any comma.",
-  "trans_date": "Transaction date and time in ISO 8601 format if possible (YYYY-MM-DD HH:MM:SS), otherwise as a string."
+  "trans_date": "Transaction date and time in ISO 8601 format if possible (YYYY-MM-DD HH:MM:SS), otherwise as a string.",
+  "amount_confidence": "A float between 0.0 and 1.0 representing your confidence in the amount field.",
+  "receiver_confidence": "A float between 0.0 and 1.0 representing your confidence in the receiver_name field.",
+  "reference_confidence": "A float between 0.0 and 1.0 representing your confidence in the trans_ref field."
 }
 """
 
@@ -29,10 +32,11 @@ USER_PROMPT = "Extract the details from this Thai bank slip image. Answer only i
 async def extract_slip_details(image_bytes: bytes) -> dict | None:
     """
     Sends the image bytes to OpenRouter Vision API and extracts slip details as a dictionary.
+    Returns a dictionary of parsed details or a dictionary containing an 'error' key on failure.
     """
     if not Config.OPENROUTER_API_KEY:
         logger.error("OpenRouter API key is missing.")
-        return None
+        return {"error": "API Key is missing", "error_code": "CONFIG_ERROR"}
 
     try:
         # Encode image to base64
@@ -81,20 +85,23 @@ async def extract_slip_details(image_bytes: bytes) -> dict | None:
                 headers=headers
             )
             
-            if response.status_code != 200:
+            if response.status_code == 429:
+                logger.error("OpenRouter API rate limit exceeded.")
+                return {"error": "OpenRouter API rate limit exceeded", "error_code": "RATE_LIMIT"}
+            elif response.status_code != 200:
                 logger.error(f"OpenRouter API returned error code {response.status_code}: {response.text}")
-                return None
+                return {"error": f"OpenRouter API error {response.status_code}", "error_code": f"HTTP_{response.status_code}"}
                 
             response_data = response.json()
             choices = response_data.get("choices", [])
             if not choices:
                 logger.error("OpenRouter API response did not contain any choices.")
-                return None
+                return {"error": "Empty choices in response", "error_code": "EMPTY_CHOICES"}
                 
             content = choices[0].get("message", {}).get("content", "")
             if not content:
                 logger.error("OpenRouter API response content is empty.")
-                return None
+                return {"error": "Empty message content", "error_code": "EMPTY_CONTENT"}
                 
             # Parse response content as JSON
             try:
@@ -115,12 +122,23 @@ async def extract_slip_details(image_bytes: bytes) -> dict | None:
                         data["amount"] = float(str(data["amount"]).replace(",", ""))
                     except ValueError:
                         data["amount"] = None
+                
+                # Normalize confidence scores
+                for field in ["amount_confidence", "receiver_confidence", "reference_confidence"]:
+                    val = data.get(field)
+                    try:
+                        data[field] = float(val) if val is not None else 1.0
+                    except (ValueError, TypeError):
+                        data[field] = 1.0
                         
                 return data
             except json.JSONDecodeError as je:
                 logger.error(f"Failed to parse content as JSON. Raw content: {content}. Error: {je}")
-                return None
+                return {"error": f"Failed to parse JSON response: {je}", "error_code": "INVALID_JSON"}
                 
+    except httpx.TimeoutException:
+        logger.error("OpenRouter Vision API request timed out.")
+        return {"error": "Request timed out", "error_code": "TIMEOUT"}
     except Exception as e:
         logger.error(f"Exception during OpenRouter vision request: {e}")
-        return None
+        return {"error": str(e), "error_code": "API_ERROR"}

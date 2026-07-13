@@ -23,6 +23,8 @@ handlers.slip.get_slipok_credentials = AsyncMock(return_value=[
     {"api_key": "test_api_key", "branch_id": "test_branch_id", "status": "active"}
 ])
 handlers.slip.update_slipok_credential_status = AsyncMock(return_value=True)
+handlers.slip.log_slip_log = AsyncMock(return_value=True)
+handlers.slip.check_duplicate_image_hash = AsyncMock(return_value=False)
 
 async def run_slipok_integration_test():
     print("\n--- Starting SlipOK Routing & Flow Integration Test ---")

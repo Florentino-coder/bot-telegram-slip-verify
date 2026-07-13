@@ -570,3 +570,49 @@ async def update_slipok_credential_status(api_key: str, status: str) -> bool:
 
 async def reset_all_slipok_credentials() -> bool:
     return await asyncio.to_thread(_db_reset_all_slipok_credentials)
+
+
+def _db_log_slip_log(log_data: dict) -> bool:
+    if not _supabase_client:
+        return False
+    try:
+        _supabase_client.table("slip_logs").insert(log_data).execute()
+        logger.info(f"Slip log saved successfully: {log_data.get('slip_id')}")
+        return True
+    except Exception as e:
+        logger.error(f"Error logging slip: {e}")
+        return False
+
+def _db_get_slip_log(slip_id: str) -> dict | None:
+    if not _supabase_client:
+        return None
+    try:
+        response = _supabase_client.table("slip_logs").select("*").eq("slip_id", slip_id).execute()
+        if response.data:
+            return response.data[0]
+        return None
+    except Exception as e:
+        logger.error(f"Error getting slip log {slip_id}: {e}")
+        return None
+
+def _db_check_duplicate_image_hash(image_hash: str) -> bool:
+    if not _supabase_client:
+        return False
+    try:
+        # Check if hash exists in slip_logs where status is PASS
+        response = _supabase_client.table("slip_logs").select("slip_id").eq("image_hash", image_hash).eq("status", "PASS").execute()
+        return len(response.data) > 0
+    except Exception as e:
+        logger.error(f"Error checking duplicate image hash: {e}")
+        return False
+
+
+async def log_slip_log(log_data: dict) -> bool:
+    return await asyncio.to_thread(_db_log_slip_log, log_data)
+
+async def get_slip_log(slip_id: str) -> dict | None:
+    return await asyncio.to_thread(_db_get_slip_log, slip_id)
+
+async def check_duplicate_image_hash(image_hash: str) -> bool:
+    return await asyncio.to_thread(_db_check_duplicate_image_hash, image_hash)
+

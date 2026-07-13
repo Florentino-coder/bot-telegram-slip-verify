@@ -11,7 +11,8 @@ from database.supabase_db import (
     get_merchant_name, set_merchant_name,
     get_merchant_names, add_merchant_name, remove_merchant_name, clear_merchant_names,
     get_allowed_accounts, add_allowed_account, remove_allowed_account, clear_allowed_accounts,
-    get_slipok_credentials, add_slipok_credential, remove_slipok_credential, reset_all_slipok_credentials
+    get_slipok_credentials, add_slipok_credential, remove_slipok_credential, reset_all_slipok_credentials,
+    get_slip_log
 )
 
 logger = logging.getLogger("SlipBot.Handlers.Start")
@@ -557,3 +558,86 @@ async def account_handler(message: types.Message):
             
     else:
         await message.reply("❌ คำสั่งย่อยไม่ถูกต้อง กรุณากรอกคำสั่งให้ถูกต้องตามคู่มือการใช้งานของ `/account`")
+
+
+@router.message(Command("slipinfo"))
+async def slip_info_handler(message: types.Message):
+    """Admin command to query detailed slip verification logs by Slip ID."""
+    # Check if the user is an admin
+    if message.from_user.id not in Config.ADMIN_USER_IDS:
+        await message.reply("❌ คุณไม่มีสิทธิ์เข้าถึงคำสั่งนี้")
+        return
+
+    args = message.text.split()
+    if len(args) < 2:
+        await message.reply("💡 **วิธีใช้งาน:** `/slipinfo <SLIP_ID>`")
+        return
+
+    slip_id = args[1].strip()
+    log = await get_slip_log(slip_id)
+    if not log:
+        await message.reply(f"❌ ไม่พบข้อมูลสำหรับ Slip ID: `{slip_id}`")
+        return
+
+    # Extract fields
+    status = log.get("status", "UNKNOWN")
+    created_at = log.get("created_at", "ไม่ระบุ")
+    user_id = log.get("telegram_user_id", "ไม่ระบุ")
+    username = log.get("telegram_username") or "ไม่ระบุ"
+    chat_id = log.get("chat_id", "ไม่ระบุ")
+    file_id = log.get("telegram_file_id") or "ไม่มี (N/A)"
+    image_hash = log.get("image_hash") or "N/A"
+    ref = log.get("reference") or "N/A"
+    amount = log.get("amount")
+    amount_str = f"{float(amount):,.2f} THB" if amount is not None else "N/A"
+    risk_score = log.get("risk_score")
+    risk_score_str = f"{risk_score}/100" if risk_score is not None else "N/A"
+    failure_reason = log.get("failure_reason") or "ไม่มี"
+    error_code = log.get("error_code") or "ไม่มี"
+    processing_time = log.get("processing_time_ms")
+    proc_time_str = f"{processing_time:,} ms" if processing_time is not None else "N/A"
+
+    # Format JSON fields nicely for display
+    def format_json(obj):
+        if not obj:
+            return "N/A"
+        import json
+        try:
+            return f"```json\n{json.dumps(obj, indent=2, ensure_ascii=False)}\n```"
+        except Exception:
+            return str(obj)
+
+    qr_result_str = format_json(log.get("qr_result"))
+    ocr_result_str = format_json(log.get("ocr_result"))
+    slipok_result_str = format_json(log.get("slipok_result"))
+    risk_result_str = format_json(log.get("risk_result"))
+
+    status_icon = "🟢 PASS" if status == "PASS" else "🔴 FAIL" if status == "FAIL" else "⚪ ERROR"
+
+    response_text = (
+        f"📊 **ข้อมูลสลิปรายละเอียด (Slip Audit Logs)**\n"
+        f"• **Slip ID**: `{slip_id}`\n"
+        f"• **สถานะการตรวจสอบ**: {status_icon}\n"
+        f"• **วันเวลาธุรกรรม**: `{created_at}`\n"
+        f"• **ผู้ส่งรูปภาพ**: ID: `{user_id}` (Username: @{username})\n"
+        f"• **Chat ID**: `{chat_id}`\n"
+        f"• **File ID**: `{file_id}`\n"
+        f"• **Image Hash**: `{image_hash[:16]}...`\n"
+        f"• **เวลาประมวลผล**: `{proc_time_str}`\n\n"
+        f"💰 **ข้อมูลสลิปที่จับคู่ได้:**\n"
+        f"• **รหัสอ้างอิงธุรกรรม**: `{ref}`\n"
+        f"• **จำนวนเงิน**: `{amount_str}`\n"
+        f"• **ระดับความเสี่ยง**: `{risk_score_str}`\n"
+        f"• **เหตุผลข้อผิดพลาด**: `{failure_reason}`\n"
+        f"• **Error Code**: `{error_code}`\n\n"
+        f"🔍 **ผลลัพธ์ขั้นตอนละเอียด:**\n"
+        f"💬 **1. Local QR Result**:\n{qr_result_str}\n"
+        f"💬 **2. Gemini OCR Result**:\n{ocr_result_str}\n"
+        f"💬 **3. SlipOK API Result**:\n{slipok_result_str}\n"
+        f"💬 **4. Risk Engine Result**:\n{risk_result_str}"
+    )
+
+    if len(response_text) > 4000:
+        response_text = response_text[:3900] + "\n\n... (ข้อมูลยาวเกินขนาดการแสดงผลบน Telegram) ..."
+
+    await message.reply(response_text, parse_mode="Markdown")

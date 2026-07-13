@@ -21,6 +21,7 @@ class Config:
     # Feature flags
     ENABLE_OCR_FALLBACK: bool = os.getenv("ENABLE_OCR_FALLBACK", "True").lower() == "true"
     STRICT_QR_MATCH: bool = os.getenv("STRICT_QR_MATCH", "True").lower() == "true"
+    AI_CONFIDENCE_THRESHOLD: float = float(os.getenv("AI_CONFIDENCE_THRESHOLD", "0.85"))
 
     @classmethod
     def validate(cls) -> list[str]:
