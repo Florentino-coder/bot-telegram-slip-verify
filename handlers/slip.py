@@ -577,8 +577,8 @@ async def process_slip_image(message: types.Message, bot: Bot):
                     return
                 else:
                     err_code = verify_res.get("error_code")
-                    if err_code in [1021, 1022]:
-                        logger.warning(f"SlipOK API configuration/billing issue (code {err_code}). Falling back to local OCR verification.")
+                    if err_code in [1010, 1021, 1022]:
+                        logger.warning(f"SlipOK API issue (code {err_code}). Falling back to local OCR verification.")
                         slipok_failed_or_unavailable = True
                     else:
                         error_text = (
