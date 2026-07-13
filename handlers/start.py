@@ -10,7 +10,8 @@ from database.supabase_db import (
     set_slipok_branch_id, set_slipok_min_amount,
     get_merchant_name, set_merchant_name,
     get_merchant_names, add_merchant_name, remove_merchant_name, clear_merchant_names,
-    get_allowed_accounts, add_allowed_account, remove_allowed_account, clear_allowed_accounts
+    get_allowed_accounts, add_allowed_account, remove_allowed_account, clear_allowed_accounts,
+    get_slipok_credentials, add_slipok_credential, remove_slipok_credential, reset_all_slipok_credentials
 )
 
 logger = logging.getLogger("SlipBot.Handlers.Start")
@@ -332,7 +333,7 @@ async def slipok_handler(message: types.Message):
         return f"{k[:4]}***{k[-4:]}"
 
     if len(args) < 2:
-        # Show current configuration status
+        # Show current configurations & list of multiple credentials with live remaining quota
         mode_icons = {
             "smart": "🧠 **Smart (ตรวจผ่าน Risk Engine ก่อน ค่อยส่ง SlipOK)**",
             "always": "🔒 **Always (ตรวจสอบทุกใบผ่าน SlipOK)**",
@@ -340,17 +341,50 @@ async def slipok_handler(message: types.Message):
         }
         current_mode = mode_icons.get(cfg["mode"], cfg["mode"])
         
+        # Fetch multiple credentials
+        creds = await get_slipok_credentials()
+        keys_list_text = ""
+        if not creds:
+            keys_list_text = "• ยังไม่ได้ตั้งค่า API Key (ระบบ SlipOK จะใช้การไม่ได้)"
+        else:
+            from services.slipok import check_slipok_quota
+            
+            lines = []
+            for i, c in enumerate(creds, 1):
+                key = c.get("api_key")
+                branch = c.get("branch_id")
+                status = c.get("status", "active")
+                
+                masked = mask_key(key)
+                status_icon = "🟢 Active" if status == "active" else "🔴 Exhausted" if status == "exhausted" else "⚪ Invalid"
+                
+                # Check live quota
+                quota_res = await check_slipok_quota(key, branch)
+                if quota_res is not None:
+                    remaining = quota_res.get("quota", 0)
+                    quota_text = f"`{remaining}` สลิป"
+                else:
+                    quota_text = "ไม่สามารถเชื่อมต่อได้"
+                    
+                lines.append(
+                    f"{i}. Key: `{masked}` (Branch: `{branch}`)\n"
+                    f"   • สถานะ: {status_icon}\n"
+                    f"   • โควต้าคงเหลือ: {quota_text}"
+                )
+            keys_list_text = "\n".join(lines)
+
         await message.reply(
             f"⚙️ **ตั้งค่าระบบ SlipOK Verification:**\n\n"
             f"• **โหมดปัจจุบัน**: {current_mode}\n"
-            f"• **API Key**: `{mask_key(cfg['api_key'])}`\n"
-            f"• **Branch ID (รหัสร้าน)**: `{cfg['branch_id'] or 'ไม่ได้ตั้งค่า'}`\n"
             f"• **ยอดตรวจขั้นต่ำ (Smart Mode)**: `{cfg['min_amount']:,.2f} THB`\n\n"
+            f"🔑 **รายการ API Key / Branch ID ทั้งหมด:**\n"
+            f"{keys_list_text}\n\n"
             f"💡 **คำสั่งตั้งค่า:**\n"
             f"• `/slipok mode <smart|always|off>` : สลับโหมดทำงาน\n"
-            f"• `/slipok setkey <API_KEY>` : ตั้งค่า API Key\n"
-            f"• `/slipok setbranch <BRANCH_ID>` : ตั้งค่ารหัสร้าน (Branch ID)\n"
-            f"• `/slipok minamount <จำนวนเงิน>` : ตั้งยอดเงินขั้นต่ำบังคับตรวจในโหมด Smart",
+            f"• `/slipok minamount <จำนวนเงิน>` : ตั้งยอดเงินขั้นต่ำในโหมด Smart\n"
+            f"• `/slipok addkey <API_KEY> <BRANCH_ID>` : เพิ่ม API Key ใหม่\n"
+            f"• `/slipok removekey <ลำดับที่>` : ลบคีย์ตามลำดับ\n"
+            f"• `/slipok resetkeys` : รีเซ็ตสถานะคีย์ทั้งหมดให้พร้อมใช้งาน",
             parse_mode="Markdown"
         )
         return
@@ -371,23 +405,70 @@ async def slipok_handler(message: types.Message):
         else:
             await message.reply("❌ เกิดข้อผิดพลาดในการบันทึกโหมดการทำงาน")
             
+    elif subcommand == "addkey":
+        if len(args) < 4:
+            await message.reply("💡 **วิธีใช้งาน:** `/slipok addkey <API_KEY> <BRANCH_ID>`")
+            return
+        key = args[2].strip()
+        branch = args[3].strip()
+        success = await add_slipok_credential(key, branch)
+        if success:
+            await message.reply(
+                f"✅ **เพิ่ม API Key สำเร็จ!**\n\n"
+                f"• API Key: `{mask_key(key)}`\n"
+                f"• Branch ID: `{branch}`",
+                parse_mode="Markdown"
+            )
+        else:
+            await message.reply("❌ เกิดข้อผิดพลาดในการบันทึกข้อมูล")
+
+    elif subcommand == "removekey":
+        if len(args) < 3:
+            await message.reply("💡 **วิธีใช้งาน:** `/slipok removekey <ลำดับที่>`")
+            return
+        try:
+            idx = int(args[2]) - 1
+            if idx < 0:
+                raise ValueError
+        except ValueError:
+            await message.reply("❌ ลำดับไม่ถูกต้อง กรุณากรอกเป็นตัวเลขเชิงบวก")
+            return
+            
+        success = await remove_slipok_credential(idx)
+        if success:
+            await message.reply(f"✅ **ลบ API Key ลำดับที่ {idx + 1} สำเร็จ!**")
+        else:
+            await message.reply("❌ เกิดข้อผิดพลาดในการลบข้อมูล (กรุณาเช็คลำดับให้ถูกต้อง)")
+
+    elif subcommand == "resetkeys":
+        success = await reset_all_slipok_credentials()
+        if success:
+            await message.reply("✅ **รีเซ็ตสถานะ API Key ทั้งหมดกลับมาพร้อมใช้งานสำเร็จ!**")
+        else:
+            await message.reply("❌ เกิดข้อผิดพลาดในการรีเซ็ตสถานะคีย์")
+
     elif subcommand == "setkey":
+        # Backward compatibility wrapper
         if len(args) < 3:
             await message.reply("💡 **วิธีใช้งาน:** `/slipok setkey <API_KEY>`")
             return
         key = args[2].strip()
-        success = await set_slipok_api_key(key)
+        branch = cfg.get("branch_id") or "71154"
+        success = await add_slipok_credential(key, branch)
         if success:
-            await message.reply(f"✅ **บันทึก API Key สำเร็จ!**\nรหัสคีย์: `{mask_key(key)}`")
+            await message.reply(f"✅ **บันทึก API Key สำเร็จ!**\nรหัสคีย์: `{mask_key(key)}` (Branch: `{branch}`)")
         else:
             await message.reply("❌ เกิดข้อผิดพลาดในการบันทึก API Key")
             
     elif subcommand == "setbranch":
+        # Backward compatibility wrapper
         if len(args) < 3:
             await message.reply("💡 **วิธีใช้งาน:** `/slipok setbranch <BRANCH_ID>`")
             return
         branch = args[2].strip()
-        success = await set_slipok_branch_id(branch)
+        creds = await get_slipok_credentials()
+        key = creds[0].get("api_key") if creds else "LEGACY_KEY_NEEDED"
+        success = await add_slipok_credential(key, branch)
         if success:
             await message.reply(f"✅ **บันทึก Branch ID สำเร็จ!**\nรหัสร้าน: `{branch}`")
         else:

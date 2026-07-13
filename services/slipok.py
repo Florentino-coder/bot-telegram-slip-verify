@@ -162,3 +162,32 @@ async def verify_slip_via_slipok(
     except Exception as e:
         logger.error(f"Exception raised during SlipOK verification request: {e}", exc_info=True)
         return None
+
+
+async def check_slipok_quota(api_key: str, branch_id: str) -> dict | None:
+    """
+    Checks the remaining quota for a SlipOK API key.
+    URL: GET https://api.slipok.com/api/line/apikey/{branch_id}/quota
+    """
+    url = f"https://api.slipok.com/api/line/apikey/{branch_id}/quota"
+    headers = {
+        "x-authorization": api_key,
+        "User-Agent": "SlipBot/1.0"
+    }
+    
+    logger.info(f"Checking SlipOK quota for branch {branch_id}...")
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(url, headers=headers)
+            if response.status_code != 200:
+                logger.error(f"SlipOK quota check returned status {response.status_code}: {response.text}")
+                return None
+                
+            res_json = response.json()
+            if res_json.get("success"):
+                return res_json.get("data")
+            return None
+    except Exception as e:
+        logger.error(f"Exception during SlipOK quota check: {e}")
+        return None

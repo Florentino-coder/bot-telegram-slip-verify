@@ -19,6 +19,10 @@ handlers.slip.get_amount_limits = AsyncMock(return_value=(100.0, 999.0))
 handlers.slip.get_allowed_accounts = AsyncMock(return_value=[])
 handlers.slip.check_duplicate = AsyncMock(return_value=False)
 handlers.slip.log_transaction = AsyncMock(return_value=True)
+handlers.slip.get_slipok_credentials = AsyncMock(return_value=[
+    {"api_key": "test_api_key", "branch_id": "test_branch_id", "status": "active"}
+])
+handlers.slip.update_slipok_credential_status = AsyncMock(return_value=True)
 
 async def run_slipok_integration_test():
     print("\n--- Starting SlipOK Routing & Flow Integration Test ---")
@@ -249,6 +253,40 @@ async def run_slipok_integration_test():
             print("✅ Case 7: PASSED")
         else:
             print("❌ Case 7: FAILED")
+
+    # Case 8: SlipOK API Key Automatic Rotation
+    print("\n[Case 8] SlipOK Mode = ALWAYS, Quota Exceeded on Key 1 -> Should rotate to Key 2")
+    rotation_credentials = [
+        {"api_key": "key_a_exhausted", "branch_id": "branch_a", "status": "active"},
+        {"api_key": "key_b_active", "branch_id": "branch_b", "status": "active"}
+    ]
+    mock_slipok_config_always = {
+        "mode": "always",
+        "min_amount": 500.0
+    }
+    mock_verify_side_effect = [
+        {"success": False, "error_code": 1022, "message": "Quota exceeded", "raw": {}},
+        mock_slipok_success_response
+    ]
+    
+    with patch("handlers.slip.get_slipok_config", AsyncMock(return_value=mock_slipok_config_always)), \
+         patch("handlers.slip.get_slipok_credentials", AsyncMock(return_value=rotation_credentials)), \
+         patch("handlers.slip.get_merchant_names", AsyncMock(return_value=["Antigravity Merchant"])), \
+         patch("handlers.slip.decode_qr_from_bytes", return_value=mock_qr_data), \
+         patch("handlers.slip.extract_slip_details", AsyncMock(return_value=mock_ocr_data)), \
+         patch("handlers.slip.verify_slip_via_slipok", AsyncMock(side_effect=mock_verify_side_effect)) as mock_verify, \
+         patch("handlers.slip.update_slipok_credential_status", AsyncMock()) as mock_update_status:
+         
+        await process_slip_image(mock_message, mock_bot)
+        
+        # Verify that verify_slip_via_slipok was called twice
+        if mock_verify.call_count == 2:
+            print("✅ Case 8: PASSED (Called SlipOK twice for rotation)")
+        else:
+            print(f"❌ Case 8: FAILED (Verify call count was {mock_verify.call_count}, expected 2)")
+            
+        # Verify that status was updated to exhausted for the first key
+        mock_update_status.assert_called_once_with("key_a_exhausted", "exhausted")
 
 
 if __name__ == "__main__":

@@ -448,3 +448,125 @@ async def remove_allowed_account(acc: str) -> bool:
 
 async def clear_allowed_accounts() -> bool:
     return await asyncio.to_thread(_db_clear_allowed_accounts)
+
+
+# --- Multiple SlipOK Credentials Management ---
+
+def _db_get_slipok_credentials() -> list[dict]:
+    if not _supabase_client:
+        return []
+    try:
+        response = _supabase_client.table("bot_settings").select("value").eq("key", "slipok_credentials").execute()
+        if response.data and response.data[0].get("value"):
+            import json
+            try:
+                return json.loads(response.data[0].get("value"))
+            except Exception:
+                pass
+        
+        # Fallback to single legacy credentials if available
+        legacy_key_resp = _supabase_client.table("bot_settings").select("value").eq("key", "slipok_api_key").execute()
+        legacy_branch_resp = _supabase_client.table("bot_settings").select("value").eq("key", "slipok_branch_id").execute()
+        
+        legacy_key = legacy_key_resp.data[0].get("value") if legacy_key_resp.data else None
+        legacy_branch = legacy_branch_resp.data[0].get("value") if legacy_branch_resp.data else None
+        
+        if legacy_key and legacy_branch:
+            initial_creds = [{"api_key": legacy_key, "branch_id": legacy_branch, "status": "active"}]
+            import json
+            _supabase_client.table("bot_settings").upsert({"key": "slipok_credentials", "value": json.dumps(initial_creds)}).execute()
+            return initial_creds
+            
+        return []
+    except Exception as e:
+        logger.error(f"Error reading slipok credentials: {e}")
+        return []
+
+def _db_add_slipok_credential(api_key: str, branch_id: str) -> bool:
+    if not _supabase_client:
+        return False
+    try:
+        creds = _db_get_slipok_credentials()
+        for c in creds:
+            if c.get("api_key") == api_key:
+                c["branch_id"] = branch_id
+                c["status"] = "active"
+                break
+        else:
+            creds.append({"api_key": api_key, "branch_id": branch_id, "status": "active"})
+            
+        import json
+        _supabase_client.table("bot_settings").upsert({"key": "slipok_credentials", "value": json.dumps(creds)}).execute()
+        logger.info(f"SlipOK credential added/updated for key: {api_key[:10]}...")
+        return True
+    except Exception as e:
+        logger.error(f"Error adding slipok credential: {e}")
+        return False
+
+def _db_remove_slipok_credential(index: int) -> bool:
+    if not _supabase_client:
+        return False
+    try:
+        creds = _db_get_slipok_credentials()
+        if 0 <= index < len(creds):
+            creds.pop(index)
+            import json
+            _supabase_client.table("bot_settings").upsert({"key": "slipok_credentials", "value": json.dumps(creds)}).execute()
+            logger.info(f"SlipOK credential at index {index} removed.")
+            return True
+        return False
+    except Exception as e:
+        logger.error(f"Error removing slipok credential: {e}")
+        return False
+
+def _db_update_slipok_credential_status(api_key: str, status: str) -> bool:
+    if not _supabase_client:
+        return False
+    try:
+        creds = _db_get_slipok_credentials()
+        updated = False
+        for c in creds:
+            if c.get("api_key") == api_key:
+                c["status"] = status
+                updated = True
+                break
+        if updated:
+            import json
+            _supabase_client.table("bot_settings").upsert({"key": "slipok_credentials", "value": json.dumps(creds)}).execute()
+            logger.info(f"Updated status of SlipOK key {api_key[:10]}... to {status}")
+            return True
+        return False
+    except Exception as e:
+        logger.error(f"Error updating slipok credential status: {e}")
+        return False
+
+def _db_reset_all_slipok_credentials() -> bool:
+    if not _supabase_client:
+        return False
+    try:
+        creds = _db_get_slipok_credentials()
+        for c in creds:
+            c["status"] = "active"
+        import json
+        _supabase_client.table("bot_settings").upsert({"key": "slipok_credentials", "value": json.dumps(creds)}).execute()
+        logger.info("Reset all SlipOK credentials to active status.")
+        return True
+    except Exception as e:
+        logger.error(f"Error resetting all slipok credentials: {e}")
+        return False
+
+
+async def get_slipok_credentials() -> list[dict]:
+    return await asyncio.to_thread(_db_get_slipok_credentials)
+
+async def add_slipok_credential(api_key: str, branch_id: str) -> bool:
+    return await asyncio.to_thread(_db_add_slipok_credential, api_key, branch_id)
+
+async def remove_slipok_credential(index: int) -> bool:
+    return await asyncio.to_thread(_db_remove_slipok_credential, index)
+
+async def update_slipok_credential_status(api_key: str, status: str) -> bool:
+    return await asyncio.to_thread(_db_update_slipok_credential_status, api_key, status)
+
+async def reset_all_slipok_credentials() -> bool:
+    return await asyncio.to_thread(_db_reset_all_slipok_credentials)

@@ -7,7 +7,8 @@ from config import Config
 from database.supabase_db import (
     check_duplicate, log_transaction, is_group_allowed, get_allowed_groups,
     is_maintenance_mode, get_amount_limits,
-    get_slipok_config, get_merchant_names, get_allowed_accounts
+    get_slipok_config, get_merchant_names, get_allowed_accounts,
+    get_slipok_credentials, update_slipok_credential_status
 )
 from services.qr_decoder import decode_qr_from_bytes
 from services.vision_ai import extract_slip_details
@@ -154,10 +155,11 @@ async def process_slip_image(message: types.Message, bot: Bot):
     processing_msg = None
     
     try:
-        # 1. Fetch configurations from database (merchant_names, allowed_accounts and slipok_config)
+        # 1. Fetch configurations from database (merchant_names, allowed_accounts, slipok_config, and slipok_credentials)
         merchant_names = await get_merchant_names()
         allowed_accounts = await get_allowed_accounts()
         slipok_config = await get_slipok_config()
+        slipok_credentials = await get_slipok_credentials()
         
         # 2. Download photo from Telegram to memory
         photo_file = io.BytesIO()
@@ -228,10 +230,11 @@ async def process_slip_image(message: types.Message, bot: Bot):
         # 5. Routing to SlipOK (Smart/Always/Off)
         use_slipok = False
         slipok_mode = slipok_config.get("mode", "off")
-        slipok_key = slipok_config.get("api_key", "")
-        slipok_branch = slipok_config.get("branch_id", "")
         
-        if slipok_mode in ["smart", "always"] and slipok_key and slipok_branch:
+        # Filter for active credentials in database
+        active_credentials = [c for c in slipok_credentials if c.get("status") == "active"]
+        
+        if slipok_mode in ["smart", "always"] and active_credentials:
             if slipok_mode == "always":
                 use_slipok = True
             elif slipok_mode == "smart":
@@ -251,14 +254,57 @@ async def process_slip_image(message: types.Message, bot: Bot):
                     logger.info(f"Smart Mode: Routing slip to SlipOK. (no_qr={no_qr}, is_suspicious={is_suspicious}, is_high_value={is_high_value})")
 
         if use_slipok:
-            logger.info("Calling SlipOK verification API...")
-            verify_res = await verify_slip_via_slipok(
-                api_key=slipok_key,
-                branch_id=slipok_branch,
-                qr_payload=qr_data.get("raw_payload") if qr_data else None,
-                image_bytes=image_bytes
-            )
+            logger.info("Calling SlipOK verification API with rotation support...")
+            verify_res = None
             
+            # Loop through active credentials
+            for cred in active_credentials:
+                current_key = cred.get("api_key")
+                current_branch = cred.get("branch_id")
+                
+                logger.info(f"Attempting SlipOK verification using key: {current_key[:10]}... (Branch: {current_branch})")
+                verify_res = await verify_slip_via_slipok(
+                    api_key=current_key,
+                    branch_id=current_branch,
+                    qr_payload=qr_data.get("raw_payload") if qr_data else None,
+                    image_bytes=image_bytes
+                )
+                
+                if verify_res is not None:
+                    if verify_res.get("success"):
+                        # Successful verification from bank! Break and process response.
+                        break
+                    else:
+                        err_code = verify_res.get("error_code")
+                        if err_code in [1021, 1022]:
+                            # Quota exhausted (1022) or invalid API key (1021)
+                            status_label = "exhausted" if err_code == 1022 else "invalid"
+                            await update_slipok_credential_status(current_key, status_label)
+                            
+                            # Censor key for Telegram messages
+                            censored_key = f"{current_key[:6]}...{current_key[-4:]}" if len(current_key) > 10 else current_key
+                            alert_msg = (
+                                f"⚠️ **แจ้งเตือน SlipOK API Key ขัดข้อง!**\n\n"
+                                f"• Key: `{censored_key}` (Branch: `{current_branch}`)\n"
+                                f"• สาเหตุ: `{'โควต้าหมด (Out of Quota)' if err_code == 1022 else 'คีย์ไม่ถูกต้อง/ปิดใช้งาน'}`\n"
+                                f"• ระบบกำลังสลับใช้ API Key ลำดับถัดไปโดยอัตโนมัติ..."
+                            )
+                            for admin_id in Config.ADMIN_USER_IDS:
+                                try:
+                                    await bot.send_message(chat_id=admin_id, text=alert_msg, parse_mode="Markdown")
+                                except Exception as e:
+                                    logger.error(f"Failed to alert admin {admin_id}: {e}")
+                            
+                            # Try the next key
+                            continue
+                        else:
+                            # Genuine verification failure (invalid slip, duplicate slip in SlipOK, wrong amount, etc.)
+                            # Do NOT rotate key, this is a real user error. Break loop.
+                            break
+                else:
+                    # Network / HTTP error. Try the next key.
+                    continue
+
             if verify_res is not None:
                 # If verify_res is not None, we process SlipOK response
                 if verify_res.get("success"):
