@@ -1,4 +1,5 @@
 import logging
+import datetime
 from config import Config
 
 logger = logging.getLogger("SlipBot.RiskEngine")
@@ -94,6 +95,74 @@ def match_account_number(full_acc: str, masked_acc: str) -> bool:
         
     # Fallback to substring matching
     return masked_digits in full_clean
+def check_slip_date(trans_date_str: str, max_days: int = 3) -> tuple[bool, str | None]:
+    """
+    Checks whether the slip transaction date is within an acceptable range.
+    
+    Returns:
+        (is_within_range, warning_message_or_None)
+        - is_within_range: False if slip is older than max_days
+        - warning_message_or_None: None if date is fine, string if there's a concern
+    """
+    if not trans_date_str or str(trans_date_str).strip() in ("", "null", "None", "ไม่ระบุ", "ไม่ระบุวันเวลา"):
+        # Cannot parse date — do not penalize, OCR may have missed it
+        return True, None
+
+    date_str = str(trans_date_str).strip()
+    parsed_date = None
+
+    # Try ISO 8601 first (handles +07:00 timezone offset)
+    try:
+        parsed_date = datetime.datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        pass
+
+    # Try common Thai/international datetime formats
+    if not parsed_date:
+        formats_to_try = [
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%dT%H:%M:%S",
+            "%d/%m/%Y %H:%M:%S",
+            "%d/%m/%Y %H:%M",
+            "%d/%m/%Y",
+            "%Y-%m-%d",
+        ]
+        for fmt in formats_to_try:
+            try:
+                parsed_date = datetime.datetime.strptime(date_str[:len(fmt)], fmt)
+                break
+            except (ValueError, TypeError):
+                continue
+
+    if not parsed_date:
+        # Cannot parse date — do not penalize
+        logger.debug(f"check_slip_date: Could not parse date string '{date_str}', skipping.")
+        return True, None
+
+    # Ensure timezone-aware comparison (treat naive datetimes as Bangkok time UTC+7)
+    tz_bangkok = datetime.timezone(datetime.timedelta(hours=7))
+    if parsed_date.tzinfo is None:
+        parsed_date = parsed_date.replace(tzinfo=tz_bangkok)
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    age_days = (now - parsed_date).total_seconds() / 86400
+
+    if age_days < 0:
+        # Slip date is in the future — suspicious
+        return False, f"วันที่บนสลิปอยู่ในอนาคต! (Date: {date_str}) อาจเป็นสลิปปลอม"
+    elif age_days > max_days:
+        return False, (
+            f"สลิปมีอายุเกิน {max_days} วัน — วันที่อ้างอิง: {date_str} "
+            f"(เก่าประมาณ {int(age_days)} วัน) อาจเป็นสลิปเก่านำมาใช้ซ้ำ"
+        )
+    elif age_days > 1:
+        return True, (
+            f"สลิปมีอายุ {int(age_days)} วัน — ไม่แนะนำให้ตรวจสอบยอดเงินในบัญชีเพิ่มเติม"
+        )
+
+    # Date is within 1 day — completely fine
+    return True, None
+
 
 
 def assess_slip_risk(
@@ -216,6 +285,19 @@ def assess_slip_risk(
     elif not isinstance(amount, (int, float)) or amount <= 0:
         warnings.append(f"Invalid transfer amount extracted: {amount}")
         risk_score += 40
+
+    # 4. Slip Date Validation
+    trans_date = ocr_data.get("trans_date")
+    if trans_date:
+        date_in_range, date_warning = check_slip_date(str(trans_date))
+        if date_warning:
+            warnings.append(date_warning)
+            if not date_in_range:
+                # Old slip or future date — penalize significantly
+                risk_score += 40
+            else:
+                # Slip is 1-3 days old — mild warning only
+                risk_score += 15
 
     is_safe = risk_score < 50
     return {

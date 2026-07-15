@@ -502,8 +502,9 @@ async def process_slip_image(message: types.Message, bot: Bot):
                                 break
                         if not match_found:
                             error_text = (
-                                f"❌ **ตรวจสอบสลิปไม่ผ่าน!**\n\n"
-                                f"ผู้รับโอนบนสลิป (`{verify_res['receiver_name']}`) ไม่ตรงกับชื่อร้านค้าที่ได้รับอนุญาต"
+                                f"🔴 **สลิปปลอม! ชื่อผู้รับไม่ตรง**\n\n"
+                                f"ชื่อผู้รับบนสลิป: `{verify_res['receiver_name']}`\n"
+                                f"ไม่ตรงกับชื่อที่ได้รับอนุญาต กรุณาตรวจสอบสลิปอีกครั้ง"
                             )
                             await reply_message(error_text)
                             risk_score = 100
@@ -521,8 +522,9 @@ async def process_slip_image(message: types.Message, bot: Bot):
                                 break
                         if not match_found:
                             error_text = (
-                                f"❌ **ตรวจสอบสลิปไม่ผ่าน!**\n\n"
-                                f"เลขที่บัญชีผู้รับโอนบนสลิป (`{verify_res['receiver_account']}`) ไม่ตรงกับบัญชีของร้านค้าที่ได้รับอนุญาต"
+                                f"🔴 **สลิปปลอม! เลขที่บัญชีผู้รับไม่ตรง**\n\n"
+                                f"เลขที่บัญชีผู้รับบนสลิป: `{verify_res['receiver_account']}`\n"
+                                f"ไม่ตรงกับบัญชีที่ได้รับอนุญาต กรุณาตรวจสอบสลิปอีกครั้ง"
                             )
                             await reply_message(error_text)
                             risk_score = 100
@@ -560,14 +562,16 @@ async def process_slip_image(message: types.Message, bot: Bot):
                     s_sender = mask_name(verify_res["sender_name"])
                     
                     success_text = (
-                        f"✅ **สลิปผ่านการตรวจสอบ (ยืนยันผ่านธนาคาร)** {db_status}\n\n"
+                        f"🟢 **สลิปจริง! (ยืนยันตรงกับระบบธนาคาร)** {db_status}\n\n"
                         f"🏦 **ธนาคารต้นทาง**: `{s_bank}`\n"
                         f"👤 **ผู้โอน**: `{s_sender}`\n"
                         f"🏢 **ผู้รับโอน**: `{verify_res['receiver_name']}`\n"
                         f"💵 **จำนวนเงิน**: `{verify_res['amount']:,.2f} THB`\n"
                         f"📅 **วันเวลา**: `{verify_res['trans_date']}`\n"
                         f"🔑 **รหัสอ้างอิง**: `{s_ref}`\n\n"
-                        f"🔎 *ตรวจสอบและยืนยันข้อมูลโดยตรงกับระบบธนาคารผ่าน SlipOK*"
+                        f"🔎 *ข้อมูลนี้ยืนยันตรงกับระบบธนาคารผ่าน SlipOK*\n\n"
+                        f"⚠️ *ผลนี้ใช้สำหรับตรวจสอบความถูกต้องของสลิปเท่านั้น*\n"
+                        f"*กรุณาให้ผู้ดูแลระบบยืนยันการรับเงินอีกครั้งก่อนดำเนินการ*"
                     )
                     
                     await reply_message(success_text)
@@ -585,8 +589,8 @@ async def process_slip_image(message: types.Message, bot: Bot):
                         slipok_failed_or_unavailable = True
                     else:
                         error_text = (
-                            f"🚨 **ตรวจสอบสลิปไม่ผ่าน!**\n\n"
-                            f"**ปัญหาที่พบ:** {verify_res['message']}\n\n"
+                            f"🔴 **สลิปไม่ผ่านการตรวจสอบจากธนาคาร!**\n\n"
+                            f"**สาเหตุ:** {verify_res['message']}\n\n"
                             f"กรุณาส่งรูปภาพสลิปที่ถูกต้อง หรือติดต่อเจ้าหน้าที่หากมีข้อสงสัย"
                         )
                         await reply_message(error_text)
@@ -627,17 +631,17 @@ async def process_slip_image(message: types.Message, bot: Bot):
 
         risk_result = assess_slip_risk(qr_data, ocr_clean, merchant_names, allowed_accounts)
         disclaimer = (
-            "\n\n📢 **คำแนะนำ** : QR ใช้งานได้ (โอกาสจริง 70%) เช็คบัญชีเพื่อความถูกต้อง"
+            "\n\n⚠️ *ผลนี้เป็นการตรวจสอบเบื้องต้นจาก QR Code และ OCR เท่านั้น ยังไม่ได้ยืนยันกับธนาคารโดยตรง*\n"
+            "*กรุณาให้ผู้ดูแลระบบยืนยันการรับเงินอีกครั้งก่อนดำเนินการ*"
         )
 
         if not risk_result["is_safe"]:
             warnings_text = "\n".join([f"• {w}" for w in risk_result["warnings"]])
             error_text = (
-                f"🚨 **ตรวจสอบสลิปไม่ผ่าน / น่าสงสัย!**\n\n"
-                f"**ความเสี่ยงระดับ**: `{risk_result['risk_score']}/100`\n"
+                f"🔴 **สลิปน่าสงสัย / อาจเป็นสลิปปลอม!**\n\n"
+                f"**ระดับความเสี่ยง**: `{risk_result['risk_score']}/100`\n"
                 f"**ปัญหาที่พบ:**\n{warnings_text}\n\n"
-                "กรุณาส่งรูปภาพสลิปที่ถูกต้อง หรือติดต่อเจ้าหน้าที่หากข้อมูลดังกล่าวมีความผิดพลาด"
-                f"{disclaimer}"
+                "กรุณาตรวจสอบสลิปอีกครั้ง หรือติดต่อเจ้าหน้าที่หากข้อมูลดังกล่าวมีความผิดพลาด"
             )
             await reply_message(error_text)
             await save_audit_log("FAIL", f"Risk engine warnings: {', '.join(risk_result['warnings'])}", "SUSPICIOUS")
@@ -665,14 +669,14 @@ async def process_slip_image(message: types.Message, bot: Bot):
             qr_bank = get_bank_name(qr_data.get("sending_bank"))
             qr_ref_str = qr_data.get("trans_ref")
             qr_status_text = (
-                f"🔎 **การตรวจสอบ QR**: `อาจจะเป็นสลิปจริง - ตรวจพบ QR Code`\n"
-                f"🏦 **ธนาคารต้นทาง (QR)**: `{qr_bank}`\n"
-                f"🔑 **รหัสธุรกรรม (QR)**: `{qr_ref_str}`"
+                f"🔎 **ผล QR Code**: `✅ พบ QR Code — เลขอ้างอิงตรงกับข้อมูลบนสลิป`\n"
+                f"🏦 **ธนาคารต้นทาง**: `{qr_bank}`\n"
+                f"🔑 **รหัสธุรกรรม**: `{qr_ref_str}`"
             )
             audit_checks["reference_match"] = True
         else:
             qr_status_text = (
-                f"🔎 **การตรวจสอบ QR**: `⚠️ น่าสงสัย / อาจจะปลอมแปลง - ตรวจไม่พบ QR Code`"
+                f"🔎 **ผล QR Code**: `⚠️ ไม่พบ QR Code — ตรวจสอบได้จาก OCR เท่านั้น ควรระวัง`"
             )
 
         amount_suffix = ""
@@ -690,12 +694,12 @@ async def process_slip_image(message: types.Message, bot: Bot):
         audit_checks["amount_match"] = True
 
         success_text = (
-            f"✅ **สลิปผ่านเกณฑ์ สแกน QR Code ได้** {db_status}\n\n"
+            f"🟡 **สลิปน่าจะเป็นของจริง (ตรวจสอบเบื้องต้น)** {db_status}\n\n"
             f"👤 **ผู้โอน**: `{sender_name}`\n"
             f"🏢 **ผู้รับโอน**: `{receiver_name}`\n"
             f"💵 **จำนวนเงิน**: `{amount:,.2f} THB`{amount_suffix}\n"
             f"📅 **วันเวลา**: `{trans_date or 'ไม่ระบุ'}`\n"
-            f"🔑 **รหัสอ้างอิง (OCR)**: `{trans_ref}`\n\n"
+            f"🔑 **รหัสอ้างอิง**: `{trans_ref}`\n\n"
             f"{qr_status_text}"
             f"{disclaimer}"
         )
