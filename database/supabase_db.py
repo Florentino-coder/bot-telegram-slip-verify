@@ -790,7 +790,7 @@ def _db_get_group_config(group_id: int) -> dict | None:
         return None
     try:
         response = _supabase_client.table("allowed_groups")\
-            .select("group_id, group_name, merchant_name, slipok_mode, allowed_accounts")\
+            .select("group_id, group_name, merchant_name, slipok_mode, allowed_accounts, min_limit, max_limit, slipok_min_amount")\
             .eq("group_id", group_id)\
             .execute()
         if response.data:
@@ -818,7 +818,9 @@ async def get_group_config(group_id: int) -> dict | None:
     return await asyncio.to_thread(_db_get_group_config, group_id)
 
 
-async def update_group_config(group_id: int, merchant_name: str | None = None, slipok_mode: str | None = None, allowed_accounts: str | None = None) -> bool:
+async def update_group_config(group_id: int, merchant_name: str | None = None, slipok_mode: str | None = None, 
+                              allowed_accounts: str | None = None, min_limit: float | str | None = None, 
+                              max_limit: float | str | None = None, slipok_min_amount: float | str | None = None) -> bool:
     """Asynchronously updates the configuration parameters for a group."""
     updates = {}
     if merchant_name is not None:
@@ -827,6 +829,13 @@ async def update_group_config(group_id: int, merchant_name: str | None = None, s
         updates["slipok_mode"] = slipok_mode if slipok_mode != "default" else None
     if allowed_accounts is not None:
         updates["allowed_accounts"] = allowed_accounts if allowed_accounts != "default" else None
+    
+    if min_limit is not None:
+        updates["min_limit"] = float(min_limit) if str(min_limit).lower() != "default" else None
+    if max_limit is not None:
+        updates["max_limit"] = float(max_limit) if str(max_limit).lower() != "default" else None
+    if slipok_min_amount is not None:
+        updates["slipok_min_amount"] = float(slipok_min_amount) if str(slipok_min_amount).lower() != "default" else None
         
     if not updates:
         return True

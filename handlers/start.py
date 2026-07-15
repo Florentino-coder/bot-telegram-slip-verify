@@ -96,6 +96,8 @@ async def help_handler(message: types.Message):
                 "• `/setaccount <เลข1 | เลข2>` : ตั้งเลขบัญชีรับโอนเฉพาะกลุ่มนี้ใหม่ทั้งหมด\n"
                 "• `/addaccount <เลขบัญชี>` : เพิ่มเลขบัญชีเฉพาะกลุ่มนี้ต่อท้ายข้อมูลเดิม\n"
                 "• `/delaccount <เลขบัญชี>` : ลบเฉพาะเลขบัญชีนี้ออกจากกลุ่มนี้\n"
+                "• `/setlimit <ยอดต่ำ> <ยอดสูง>` : กำหนดช่วงยอดโอนปกติเฉพาะกลุ่มนี้ (เช่น `/setlimit 100 5000`)\n"
+                "• `/setminamount <ยอดเงิน>` : กำหนดยอดเงินเริ่มเช็คธนาคาร (Smart) เฉพาะกลุ่มนี้ (เช่น `/setminamount 300`)\n"
                 "• `/setmode <smart | always | off>` : กำหนดโหมดตรวจสลิปเฉพาะกลุ่มนี้\n"
                 "💡 *หมายเหตุ:* ทุกคำสั่งตั้งค่ารายกลุ่มพิมพ์ตามด้วย `default` เพื่อรีเซ็ตกลับเป็นค่าเริ่มต้นระบบ\n"
             )
@@ -287,10 +289,19 @@ async def groups_handler(message: types.Message):
         g_mode = g_config.get("slipok_mode") or "ใช้ค่าเริ่มต้นของระบบ (Global Fallback)"
         g_accounts = g_config.get("allowed_accounts") or "ใช้ค่าเริ่มต้นของระบบ (Global Fallback)"
         
+        g_min = g_config.get("min_limit")
+        g_max = g_config.get("max_limit")
+        g_limit_str = f"{g_min:,.2f} - {g_max:,.2f} THB" if (g_min is not None and g_max is not None) else "ใช้ค่าเริ่มต้นของระบบ (Global Fallback)"
+        
+        g_slipok_min = g_config.get("slipok_min_amount")
+        g_slipok_min_str = f"{g_slipok_min:,.2f} THB" if g_slipok_min is not None else "ใช้ค่าเริ่มต้นของระบบ (Global Fallback)"
+        
         text += (
             f"{i}. **{g_name}** (ID: `{g_id}`)\n"
             f"   • ร้านค้าผู้รับ: `{g_merchant}`\n"
             f"   • เลขบัญชีรับโอน: `{g_accounts}`\n"
+            f"   • ช่วงยอดเงินปกติ: `{g_limit_str}`\n"
+            f"   • ขั้นต่ำตรวจ SlipOK (Smart): `{g_slipok_min_str}`\n"
             f"   • โหมดตรวจสอบ: `{g_mode.upper() if g_mode != 'ใช้ค่าเริ่มต้นของระบบ (Global Fallback)' else g_mode}`\n\n"
         )
 
@@ -1135,6 +1146,13 @@ async def groupinfo_handler(message: types.Message):
     g_merchant = g_config.get("merchant_name") or "ใช้ค่าเริ่มต้นของระบบ (Global Fallback)"
     g_mode = g_config.get("slipok_mode") or "ใช้ค่าเริ่มต้นของระบบ (Global Fallback)"
     g_accounts = g_config.get("allowed_accounts") or "ใช้ค่าเริ่มต้นของระบบ (Global Fallback)"
+    
+    g_min = g_config.get("min_limit")
+    g_max = g_config.get("max_limit")
+    g_limit_str = f"`{g_min:,.2f} THB` ถึง `{g_max:,.2f} THB`" if (g_min is not None and g_max is not None) else "ใช้ค่าเริ่มต้นของระบบ (Global Fallback)"
+    
+    g_slipok_min = g_config.get("slipok_min_amount")
+    g_slipok_min_str = f"`{g_slipok_min:,.2f} THB`" if g_slipok_min is not None else "ใช้ค่าเริ่มต้นของระบบ (Global Fallback)"
 
     info_text = (
         f"👥 **ข้อมูลและการตั้งค่ากลุ่มนี้:**\n\n"
@@ -1142,6 +1160,8 @@ async def groupinfo_handler(message: types.Message):
         f"• **Group ID**: `{group_id}`\n"
         f"• **ร้านค้าผู้รับ**: `{g_merchant}`\n"
         f"• **เลขบัญชีรับโอน**: `{g_accounts}`\n"
+        f"• **ช่วงยอดเงินปกติ**: {g_limit_str}\n"
+        f"• **ขั้นต่ำตรวจ SlipOK (Smart)**: {g_slipok_min_str}\n"
         f"• **โหมดตรวจสอบ**: `{g_mode.upper() if g_mode != 'ใช้ค่าเริ่มต้นของระบบ (Global Fallback)' else g_mode}`"
     )
     await message.reply(info_text, parse_mode="Markdown")
@@ -1399,4 +1419,175 @@ async def del_group_account_handler(message: types.Message):
         )
     else:
         await message.reply("❌ เกิดข้อผิดพลาดในการบันทึกข้อมูล")
+
+
+@router.message(Command("setlimit"))
+async def set_group_limit_handler(message: types.Message):
+    """Admin command to configure normal transaction amount limits for a specific group."""
+    has_perm = await check_admin_permission(message.from_user.id, "groups")
+    if not has_perm:
+        await message.reply("❌ คุณไม่มีสิทธิ์เข้าถึงคำสั่งนี้")
+        return
+
+    is_chat_group = message.chat.type in ["group", "supergroup"]
+    args = message.text.split()
+    
+    group_id = None
+    min_val = None
+    max_val = None
+    
+    if is_chat_group:
+        group_id = message.chat.id
+        if len(args) < 2:
+            await message.reply(
+                "💡 **วิธีใช้งาน (พิมพ์ในห้องกลุ่มแชท):**\n"
+                "• `/setlimit <ยอดต่ำสุด> <ยอดสูงสุด>` : กำหนดช่วงเงินตรวจสอบเฉพาะกลุ่ม\n"
+                "• `/setlimit default` : รีเซ็ตกลับเป็นค่าเริ่มต้นระบบส่วนกลาง"
+            )
+            return
+        
+        if args[1].lower() == "default":
+            min_val = "default"
+            max_val = "default"
+        else:
+            if len(args) < 3:
+                await message.reply("❌ กรุณากรอกทั้งยอดต่ำสุดและยอดสูงสุด เช่น `/setlimit 100 5000`")
+                return
+            try:
+                min_val = float(args[1])
+                max_val = float(args[2])
+            except ValueError:
+                await message.reply("❌ ตัวเลขไม่ถูกต้อง กรุณากรอกเป็นตัวเลขเชิงบวก")
+                return
+    else:
+        # PM chat
+        if len(args) < 3:
+            await message.reply(
+                "💡 **วิธีใช้งาน (พิมพ์ในแชทส่วนตัว):**\n"
+                "• `/setlimit <group_id> <ยอดต่ำสุด> <ยอดสูงสุด>`\n"
+                "• `/setlimit <group_id> default`"
+            )
+            return
+        try:
+            group_id = int(args[1])
+        except ValueError:
+            await message.reply("❌ รูปแบบ Group ID ไม่ถูกต้อง")
+            return
+            
+        if args[2].lower() == "default":
+            min_val = "default"
+            max_val = "default"
+        else:
+            if len(args) < 4:
+                await message.reply("❌ กรุณากรอกทั้งยอดต่ำสุดและยอดสูงสุด")
+                return
+            try:
+                min_val = float(args[2])
+                max_val = float(args[3])
+            except ValueError:
+                await message.reply("❌ ตัวเลขไม่ถูกต้อง")
+                return
+
+    # Validations if not default
+    if min_val != "default" and max_val != "default":
+        if min_val < 0 or max_val < 0:
+            await message.reply("❌ ยอดเงินไม่สามารถติดลบได้")
+            return
+        if min_val >= max_val:
+            await message.reply("❌ ยอดเงินขั้นต่ำต้องน้อยกว่ายอดเงินขั้นสูงสุด")
+            return
+
+    g_config = await get_group_config(group_id)
+    if not g_config:
+        await message.reply(f"❌ ไม่พบกลุ่ม ID `{group_id}` ในระบบ")
+        return
+
+    success = await update_group_config(group_id, min_limit=min_val, max_limit=max_val)
+    if success:
+        display_str = f"`{min_val:,.2f} - {max_val:,.2f} THB`" if min_val != "default" else "กลับไปใช้ค่าเริ่มต้นระบบ (Global Fallback)"
+        await message.reply(
+            f"✅ **อัปเดตช่วงยอดเงินเฉพาะกลุ่มสำเร็จ!**\n"
+            f"• กลุ่ม: **{g_config.get('group_name')}**\n"
+            f"• ขอบเขตเงินตรวจสอบ: {display_str}"
+        )
+    else:
+        await message.reply("❌ เกิดข้อผิดพลาดในการบันทึกข้อมูล")
+
+
+@router.message(Command("setminamount"))
+async def set_group_min_amount_handler(message: types.Message):
+    """Admin command to configure slipok min amount for smart routing in a specific group."""
+    has_perm = await check_admin_permission(message.from_user.id, "groups")
+    if not has_perm:
+        await message.reply("❌ คุณไม่มีสิทธิ์เข้าถึงคำสั่งนี้")
+        return
+
+    is_chat_group = message.chat.type in ["group", "supergroup"]
+    args = message.text.split()
+    
+    group_id = None
+    min_amount = None
+    
+    if is_chat_group:
+        group_id = message.chat.id
+        if len(args) < 2:
+            await message.reply(
+                "💡 **วิธีใช้งาน (พิมพ์ในห้องกลุ่มแชท):**\n"
+                "• `/setminamount <ยอดขั้นต่ำ>` : ยอดโอนเริ่มตรวจ SlipOK เฉพาะกลุ่มนี้\n"
+                "• `/setminamount default` : รีเซ็ตกลับเป็นค่าเริ่มต้นระบบส่วนกลาง"
+            )
+            return
+        
+        if args[1].lower() == "default":
+            min_amount = "default"
+        else:
+            try:
+                min_amount = float(args[1])
+            except ValueError:
+                await message.reply("❌ ตัวเลขไม่ถูกต้อง กรุณากรอกเป็นตัวเลขเชิงบวก")
+                return
+    else:
+        # PM chat
+        if len(args) < 3:
+            await message.reply(
+                "💡 **วิธีใช้งาน (พิมพ์ในแชทส่วนตัว):**\n"
+                "• `/setminamount <group_id> <ยอดขั้นต่ำ>`\n"
+                "• `/setminamount <group_id> default`"
+            )
+            return
+        try:
+            group_id = int(args[1])
+        except ValueError:
+            await message.reply("❌ รูปแบบ Group ID ไม่ถูกต้อง")
+            return
+            
+        if args[2].lower() == "default":
+            min_amount = "default"
+        else:
+            try:
+                min_amount = float(args[2])
+            except ValueError:
+                await message.reply("❌ ตัวเลขไม่ถูกต้อง")
+                return
+
+    if min_amount != "default" and min_amount < 0:
+        await message.reply("❌ ยอดเงินไม่สามารถติดลบได้")
+        return
+
+    g_config = await get_group_config(group_id)
+    if not g_config:
+        await message.reply(f"❌ ไม่พบกลุ่ม ID `{group_id}` ในระบบ")
+        return
+
+    success = await update_group_config(group_id, slipok_min_amount=min_amount)
+    if success:
+        display_str = f"`{min_amount:,.2f} THB`" if min_amount != "default" else "กลับไปใช้ค่าเริ่มต้นระบบ (Global Fallback)"
+        await message.reply(
+            f"✅ **อัปเดตยอดเงินเช็ค SlipOK ขั้นต่ำเฉพาะกลุ่มสำเร็จ!**\n"
+            f"• กลุ่ม: **{g_config.get('group_name')}**\n"
+            f"• ยอดโอนเริ่มตรวจ SlipOK (Smart): {display_str}"
+        )
+    else:
+        await message.reply("❌ เกิดข้อผิดพลาดในการบันทึกข้อมูล")
+
 

@@ -372,6 +372,12 @@ async def process_slip_image(message: types.Message, bot: Bot):
         allowed_accounts = []
         slipok_mode = slipok_config.get("mode", "off")
         
+        # Load global amount limits and slipok min amount as defaults
+        global_min_limit, global_max_limit = await get_amount_limits()
+        min_limit = global_min_limit
+        max_limit = global_max_limit
+        slipok_min_amount = slipok_config.get("min_amount", 500.0)
+        
         if group_config:
             # 1.1 Merchant Name Override
             g_merchant = group_config.get("merchant_name")
@@ -393,6 +399,19 @@ async def process_slip_image(message: types.Message, bot: Bot):
             g_mode = group_config.get("slipok_mode")
             if g_mode and g_mode in ["smart", "always", "off"]:
                 slipok_mode = g_mode
+                
+            # 1.4 Group Limits Override
+            g_min_limit = group_config.get("min_limit")
+            g_max_limit = group_config.get("max_limit")
+            if g_min_limit is not None:
+                min_limit = float(g_min_limit)
+            if g_max_limit is not None:
+                max_limit = float(g_max_limit)
+                
+            # 1.5 Group SlipOK Min Amount Override
+            g_slipok_min = group_config.get("slipok_min_amount")
+            if g_slipok_min is not None:
+                slipok_min_amount = float(g_slipok_min)
         else:
             merchant_names = await get_merchant_names()
             allowed_accounts = await get_allowed_accounts()
@@ -522,7 +541,7 @@ async def process_slip_image(message: types.Message, bot: Bot):
                 # 3. High value transfer
                 is_high_value = False
                 if ocr_clean and ocr_clean.get("amount") is not None:
-                    is_high_value = ocr_clean["amount"] >= slipok_config.get("min_amount", 500.0)
+                    is_high_value = ocr_clean["amount"] >= slipok_min_amount
                 
                 if no_qr or is_suspicious or is_high_value or is_low_confidence or (ocr_data and "error" in ocr_data):
                     use_slipok = True
@@ -798,7 +817,6 @@ async def process_slip_image(message: types.Message, bot: Bot):
 
         amount_suffix = ""
         try:
-            min_limit, max_limit = await get_amount_limits()
             amount_val = float(amount)
             if amount_val < min_limit or amount_val > max_limit:
                 amount_suffix = " ⚠️ เช็คในบัญชีอีกครั้ง!"
