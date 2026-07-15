@@ -639,10 +639,12 @@ async def process_slip_image(message: types.Message, bot: Bot):
                     # Compact message format
                     success_text = (
                         f"🟢 **สลิปจริง! (ยืนยันตรงกับระบบธนาคาร)** {db_status}\n\n"
-                        f"👤 {s_sender} ➔ {verify_res['receiver_name']}\n"
-                        f"💵 **{verify_res['amount']:,.2f} THB**\n"
-                        f"📅 วันเวลา: `{be_date_str}` · 🏦 {s_bank}\n"
-                        f"📊 วันนี้: `{sender_count} ครั้ง` ⚠️\n\n"
+                        f"👤 **ผู้โอน**: `{s_sender}`\n"
+                        f"🏢 **ผู้รับ**: `{verify_res['receiver_name']}`\n"
+                        f"💵 **ยอดเงิน**: `{verify_res['amount']:,.2f} THB`\n"
+                        f"📅 **วันเวลา**: `{be_date_str}`\n"
+                        f"🏦 **ธนาคาร**: `{s_bank}`\n"
+                        f"📊 **วันนี้**: `{sender_count} ครั้ง` ⚠️\n\n"
                         f"⚠️ *ผลนี้ใช้สำหรับตรวจสอบความถูกต้องของสลิปเท่านั้น*\n"
                         f"*กรุณาให้ผู้ดูแลระบบยืนยันการรับเงินอีกครั้งก่อนดำเนินการ*"
                     )
@@ -785,10 +787,11 @@ async def process_slip_image(message: types.Message, bot: Bot):
 
         success_text = (
             f"🟡 **สลิปน่าจะเป็นของจริง (ตรวจสอบเบื้องต้น)** {db_status}\n\n"
-            f"👤 {s_sender} ➔ {receiver_name}\n"
-            f"💵 **{amount:,.2f} THB**{amount_suffix}\n"
-            f"📅 วันเวลา: `{be_date_str}`\n"
-            f"📊 วันนี้: `{sender_count} ครั้ง` ⚠️\n\n"
+            f"👤 **ผู้โอน**: `{s_sender}`\n"
+            f"🏢 **ผู้รับ**: `{receiver_name}`\n"
+            f"💵 **ยอดเงิน**: `{amount:,.2f} THB`{amount_suffix}\n"
+            f"📅 **วันเวลา**: `{be_date_str}`\n"
+            f"📊 **วันนี้**: `{sender_count} ครั้ง` ⚠️\n\n"
             f"{disclaimer}"
         )
         
@@ -932,10 +935,12 @@ async def process_summary_callback(callback_query: CallbackQuery):
     if provider == "SLIPOK":
         success_text = (
             f"🟢 **สลิปจริง! (ยืนยันตรงกับระบบธนาคาร)** ⚙️💾✅\n\n"
-            f"👤 {s_sender} ➔ {receiver_name}\n"
-            f"💵 **{amount:,.2f} THB**\n"
-            f"📅 วันเวลา: `{be_date_str}` · 🏦 {bank_name}\n"
-            f"📊 วันนี้: `{sender_count} ครั้ง` ⚠️\n\n"
+            f"👤 **ผู้โอน**: `{s_sender}`\n"
+            f"🏢 **ผู้รับ**: `{receiver_name}`\n"
+            f"💵 **ยอดเงิน**: `{amount:,.2f} THB`\n"
+            f"📅 **วันเวลา**: `{be_date_str}`\n"
+            f"🏦 **ธนาคาร**: `{bank_name}`\n"
+            f"📊 **วันนี้**: `{sender_count} ครั้ง` ⚠️\n\n"
             f"⚠️ *ผลนี้ใช้สำหรับตรวจสอบความถูกต้องของสลิปเท่านั้น*\n"
             f"*กรุณาให้ผู้ดูแลระบบยืนยันการรับเงินอีกครั้งก่อนดำเนินการ*"
         )
@@ -947,10 +952,11 @@ async def process_summary_callback(callback_query: CallbackQuery):
         
         success_text = (
             f"🟡 **สลิปน่าจะเป็นของจริง (ตรวจสอบเบื้องต้น)** ⚙️💾✅\n\n"
-            f"👤 {s_sender} ➔ {receiver_name}\n"
-            f"💵 **{amount:,.2f} THB**\n"
-            f"📅 วันเวลา: `{be_date_str}`\n"
-            f"📊 วันนี้: `{sender_count} ครั้ง` ⚠️\n\n"
+            f"👤 **ผู้โอน**: `{s_sender}`\n"
+            f"🏢 **ผู้รับ**: `{receiver_name}`\n"
+            f"💵 **ยอดเงิน**: `{amount:,.2f} THB`\n"
+            f"📅 **วันเวลา**: `{be_date_str}`\n"
+            f"📊 **วันนี้**: `{sender_count} ครั้ง` ⚠️\n\n"
             f"{disclaimer}"
         )
         
