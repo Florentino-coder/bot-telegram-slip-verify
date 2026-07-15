@@ -51,18 +51,27 @@ async def help_handler(message: types.Message):
             "🏦 **คำสั่งตรวจสอบและสถิติ:**\n"
             "• `/stats` : ดูสถิติและผลประเมินยอดรวมของระบบ\n"
             "• `/slipinfo <slip_id>` : ค้นหารายละเอียดการตรวจสลิปเชิงลึก\n"
-            "• `/myid` หรือ `/id` : ตรวจสอบ User ID (พิมพ์ปกติหรือ Reply ข้อความผู้อื่น)\n"
+            "• `/myid` หรือ `/id` : ตรวจสอบ User ID ของคุณ\n"
             "• `/groupid` : ตรวจสอบ ID ของแชทกลุ่มปัจจุบัน\n\n"
-            "👥 **การจัดการกลุ่มแชทที่ได้รับอนุญาต:**\n"
-            "• `/allowgroup` : อนุญาตการใช้งานบอทในกลุ่มปัจจุบัน (พิมพ์ในกลุ่มนั้น)\n"
-            "• `/disallowgroup <group_id>` : ยกเลิกสิทธิ์การใช้งานบอทในกลุ่มที่ระบุ\n"
-            "• `/groups` : ลิสต์รายชื่อกลุ่มแชทที่อนุญาตทั้งหมด\n\n"
-            "⚙️ **การตั้งค่าบอทและฐานข้อมูล:**\n"
+            "👥 **การจัดการกลุ่มแชททั่วไป:**\n"
+            "• `/allowgroup` : อนุญาตการใช้งานบอทในกลุ่มปัจจุบัน (พิมพ์ในกลุ่ม)\n"
+            "• `/disallowgroup <group_id>` : ยกเลิกสิทธิ์กลุ่ม\n"
+            "• `/groups` : แสดงรายชื่อกลุ่มแชทและการตั้งค่าทั้งหมด\n"
+            "• `/groupinfo` : แสดงการตั้งค่าเฉพาะของกลุ่มนี้เท่านั้น (พิมพ์ในกลุ่ม)\n\n"
+            "📢 **คำสั่งตั้งค่ารายกลุ่มแชท (Group Overrides):**\n"
+            "• `/setmerchant <ชื่อ>` : ตั้งร้านผู้รับโอนเฉพาะกลุ่มนี้ใหม่ทั้งหมด\n"
+            "• `/addmerchant <ชื่อ>` : เพิ่มร้านค้าต่อท้ายชื่อเดิมเฉพาะกลุ่มนี้\n"
+            "• `/delmerchant <ชื่อ>` : ลบเฉพาะชื่อร้านนี้ออกจากกลุ่มนี้\n"
+            "• `/setaccount <เลข>` : ตั้งเลขบัญชีเฉพาะกลุ่มนี้ใหม่ทั้งหมด\n"
+            "• `/addaccount <เลข>` : เพิ่มเลขบัญชีต่อท้ายบัญชีเดิมเฉพาะกลุ่มนี้\n"
+            "• `/delaccount <เลข>` : ลบเฉพาะเลขบัญชีนี้ออกจากกลุ่มนี้\n"
+            "• `/setmode <smart/always/off>` : ตั้งโหมด SlipOK เฉพาะกลุ่มนี้\n\n"
+            "⚙️ **การตั้งค่าบอทหลัก (Global Config):**\n"
             "• `/maintenance <on/off>` : เปิด/ปิดระบบปิดปรับปรุงบอท\n"
             "• `/limit <min> <max>` : กำหนดช่วงยอดเงินปกติในการโอน\n"
-            "• `/merchant` : ดู/เพิ่ม/ลบชื่อร้านค้าปลายทางที่ยอมรับ\n"
-            "• `/account` : ดู/เพิ่ม/ลบเลขบัญชีธนาคารปลายทางที่ยอมรับ\n"
-            "• `/slipok` : ดู/ตั้งค่า/เปิดปิดเชื่อมโยง API ของ SlipOK (Super Admin Only)"
+            "• `/merchant` : ดู/เพิ่ม/ลบชื่อร้านผู้รับโอนเริ่มต้นระบบ\n"
+            "• `/account` : ดู/เพิ่ม/ลบเลขบัญชีผู้รับโอนเริ่มต้นระบบ\n"
+            "• `/slipok` : ดู/ตั้งค่า/เปิดปิด API SlipOK เริ่มต้นระบบ"
         )
     else:
         help_text = (
@@ -1023,3 +1032,302 @@ async def admin_management_handler(message: types.Message):
             
     else:
         await message.reply("❌ คำสั่งย่อยไม่ถูกต้อง กรุณากรอกคำสั่งให้ถูกต้องตามคู่มือการใช้งานของ `/admin`")
+
+
+@router.message(Command("groupinfo"))
+async def groupinfo_handler(message: types.Message):
+    """Admin command to show detailed config settings for the current group."""
+    has_perm = await check_admin_permission(message.from_user.id, "groups")
+    if not has_perm:
+        await message.reply("❌ คุณไม่มีสิทธิ์เข้าถึงคำสั่งนี้")
+        return
+
+    is_chat_group = message.chat.type in ["group", "supergroup"]
+    group_id = message.chat.id
+    
+    # In private chat, need to provide group_id
+    if not is_chat_group:
+        args = message.text.split()
+        if len(args) < 2:
+            await message.reply("💡 **วิธีใช้งาน (พิมพ์ในแชทบอทส่วนตัว):** `/groupinfo <group_id>`")
+            return
+        try:
+            group_id = int(args[1])
+        except ValueError:
+            await message.reply("❌ รูปแบบ Group ID ไม่ถูกต้อง")
+            return
+
+    g_config = await get_group_config(group_id)
+    if not g_config:
+        await message.reply(f"❌ ไม่พบกลุ่ม ID `{group_id}` ในระบบ หรือกลุ่มยังไม่ได้รับอนุญาต")
+        return
+
+    g_name = g_config.get("group_name") or "กลุ่มไม่ระบุชื่อ"
+    g_merchant = g_config.get("merchant_name") or "ใช้ค่าเริ่มต้นของระบบ (Global Fallback)"
+    g_mode = g_config.get("slipok_mode") or "ใช้ค่าเริ่มต้นของระบบ (Global Fallback)"
+    g_accounts = g_config.get("allowed_accounts") or "ใช้ค่าเริ่มต้นของระบบ (Global Fallback)"
+
+    info_text = (
+        f"👥 **ข้อมูลและการตั้งค่ากลุ่มนี้:**\n\n"
+        f"• **ชื่อกลุ่ม**: **{g_name}**\n"
+        f"• **Group ID**: `{group_id}`\n"
+        f"• **ร้านค้าผู้รับ**: `{g_merchant}`\n"
+        f"• **เลขบัญชีรับโอน**: `{g_accounts}`\n"
+        f"• **โหมดตรวจสอบ**: `{g_mode.upper() if g_mode != 'ใช้ค่าเริ่มต้นของระบบ (Global Fallback)' else g_mode}`"
+    )
+    await message.reply(info_text, parse_mode="Markdown")
+
+
+@router.message(Command("addmerchant"))
+async def add_group_merchant_handler(message: types.Message):
+    """Admin command to append a merchant name to the group list."""
+    has_perm = await check_admin_permission(message.from_user.id, "groups")
+    if not has_perm:
+        await message.reply("❌ คุณไม่มีสิทธิ์เข้าถึงคำสั่งนี้")
+        return
+
+    is_chat_group = message.chat.type in ["group", "supergroup"]
+    args = message.text.split(maxsplit=2)
+    
+    group_id = None
+    name_to_add = None
+    
+    if is_chat_group:
+        group_id = message.chat.id
+        if len(args) < 2:
+            await message.reply("💡 **วิธีใช้งาน:** `/addmerchant <ชื่อร้าน>`")
+            return
+        name_to_add = message.text.split(maxsplit=1)[1].strip()
+    else:
+        if len(args) < 3:
+            await message.reply("💡 **วิธีใช้งาน:** `/addmerchant <group_id> <ชื่อร้าน>`")
+            return
+        try:
+            group_id = int(args[1])
+        except ValueError:
+            await message.reply("❌ รูปแบบ Group ID ไม่ถูกต้อง")
+            return
+        name_to_add = args[2].strip()
+
+    g_config = await get_group_config(group_id)
+    if not g_config:
+        await message.reply(f"❌ ไม่พบกลุ่ม ID `{group_id}` ในระบบ")
+        return
+
+    # Parse existing names
+    existing = g_config.get("merchant_name") or ""
+    sep = "|" if "|" in existing else ","
+    names_list = [n.strip() for n in existing.split(sep) if n.strip()]
+    
+    # Check duplicate
+    if any(n.lower() == name_to_add.lower() for n in names_list):
+        await message.reply(f"💡 มีชื่อ `{name_to_add}` อยู่ในการตั้งค่ากลุ่มนี้แล้ว")
+        return
+
+    names_list.append(name_to_add)
+    new_merchant_str = " | ".join(names_list)
+    
+    success = await update_group_config(group_id, merchant_name=new_merchant_str)
+    if success:
+        await message.reply(
+            f"✅ **เพิ่มชื่อร้านค้าเฉพาะกลุ่มสำเร็จ!**\n"
+            f"• กลุ่ม: **{g_config.get('group_name')}**\n"
+            f"• รายชื่อผู้รับโอนปัจจุบัน: `{new_merchant_str}`"
+        )
+    else:
+        await message.reply("❌ เกิดข้อผิดพลาดในการบันทึกข้อมูล")
+
+
+@router.message(Command("delmerchant"))
+async def del_group_merchant_handler(message: types.Message):
+    """Admin command to remove a specific merchant name from the group list."""
+    has_perm = await check_admin_permission(message.from_user.id, "groups")
+    if not has_perm:
+        await message.reply("❌ คุณไม่มีสิทธิ์เข้าถึงคำสั่งนี้")
+        return
+
+    is_chat_group = message.chat.type in ["group", "supergroup"]
+    args = message.text.split(maxsplit=2)
+    
+    group_id = None
+    name_to_del = None
+    
+    if is_chat_group:
+        group_id = message.chat.id
+        if len(args) < 2:
+            await message.reply("💡 **วิธีใช้งาน:** `/delmerchant <ชื่อร้าน>`")
+            return
+        name_to_del = message.text.split(maxsplit=1)[1].strip()
+    else:
+        if len(args) < 3:
+            await message.reply("💡 **วิธีใช้งาน:** `/delmerchant <group_id> <ชื่อร้าน>`")
+            return
+        try:
+            group_id = int(args[1])
+        except ValueError:
+            await message.reply("❌ รูปแบบ Group ID ไม่ถูกต้อง")
+            return
+        name_to_del = args[2].strip()
+
+    g_config = await get_group_config(group_id)
+    if not g_config:
+        await message.reply(f"❌ ไม่พบกลุ่ม ID `{group_id}` ในระบบ")
+        return
+
+    existing = g_config.get("merchant_name") or ""
+    if not existing:
+        await message.reply("💡 กลุ่มนี้ยังไม่มีการตั้งชื่อร้านเฉพาะตัว")
+        return
+
+    sep = "|" if "|" in existing else ","
+    names_list = [n.strip() for n in existing.split(sep) if n.strip()]
+    
+    # Filter out target name
+    new_names_list = [n for n in names_list if n.lower() != name_to_del.lower()]
+    
+    if len(new_names_list) == len(names_list):
+        await message.reply(f"💡 ไม่พบชื่อร้าน `{name_to_del}` ในการตั้งค่ากลุ่มนี้")
+        return
+
+    new_merchant_str = " | ".join(new_names_list) if new_names_list else "default"
+    
+    success = await update_group_config(group_id, merchant_name=new_merchant_str)
+    if success:
+        display_str = f"`{new_merchant_str}`" if new_merchant_str != "default" else "กลับไปใช้ค่าเริ่มต้นระบบ (Global Fallback)"
+        await message.reply(
+            f"✅ **ลบชื่อร้านค้าเฉพาะกลุ่มสำเร็จ!**\n"
+            f"• กลุ่ม: **{g_config.get('group_name')}**\n"
+            f"• รายชื่อผู้รับโอนปัจจุบัน: {display_str}"
+        )
+    else:
+        await message.reply("❌ เกิดข้อผิดพลาดในการบันทึกข้อมูล")
+
+
+@router.message(Command("addaccount"))
+async def add_group_account_handler(message: types.Message):
+    """Admin command to append an allowed account to the group list."""
+    has_perm = await check_admin_permission(message.from_user.id, "groups")
+    if not has_perm:
+        await message.reply("❌ คุณไม่มีสิทธิ์เข้าถึงคำสั่งนี้")
+        return
+
+    is_chat_group = message.chat.type in ["group", "supergroup"]
+    args = message.text.split(maxsplit=2)
+    
+    group_id = None
+    acc_to_add = None
+    
+    if is_chat_group:
+        group_id = message.chat.id
+        if len(args) < 2:
+            await message.reply("💡 **วิธีใช้งาน:** `/addaccount <เลขบัญชี>`")
+            return
+        acc_to_add = message.text.split(maxsplit=1)[1].strip()
+    else:
+        if len(args) < 3:
+            await message.reply("💡 **วิธีใช้งาน:** `/addaccount <group_id> <เลขบัญชี>`")
+            return
+        try:
+            group_id = int(args[1])
+        except ValueError:
+            await message.reply("❌ รูปแบบ Group ID ไม่ถูกต้อง")
+            return
+        acc_to_add = args[2].strip()
+
+    g_config = await get_group_config(group_id)
+    if not g_config:
+        await message.reply(f"❌ ไม่พบกลุ่ม ID `{group_id}` ในระบบ")
+        return
+
+    # Clean the input account format (digits only or wildcards)
+    clean_acc = "".join([c for c in acc_to_add if c.isdigit() or c.lower() in ("x", "*", "_")])
+    if not clean_acc:
+        await message.reply("❌ รูปแบบบัญชีไม่ถูกต้อง กรุณากรอกเฉพาะตัวเลขและอักขระเช็ค")
+        return
+
+    existing = g_config.get("allowed_accounts") or ""
+    sep = "|" if "|" in existing else ","
+    accs_list = [a.strip() for a in existing.split(sep) if a.strip()]
+    
+    if clean_acc in accs_list:
+        await message.reply(f"💡 มีเลขบัญชี `{clean_acc}` อยู่ในการตั้งค่ากลุ่มนี้แล้ว")
+        return
+
+    accs_list.append(clean_acc)
+    new_acc_str = " | ".join(accs_list)
+    
+    success = await update_group_config(group_id, allowed_accounts=new_acc_str)
+    if success:
+        await message.reply(
+            f"✅ **เพิ่มเลขบัญชีเฉพาะกลุ่มสำเร็จ!**\n"
+            f"• กลุ่ม: **{g_config.get('group_name')}**\n"
+            f"• บัญชีผู้รับโอนปัจจุบัน: `{new_acc_str}`"
+        )
+    else:
+        await message.reply("❌ เกิดข้อผิดพลาดในการบันทึกข้อมูล")
+
+
+@router.message(Command("delaccount"))
+async def del_group_account_handler(message: types.Message):
+    """Admin command to remove an allowed account from the group list."""
+    has_perm = await check_admin_permission(message.from_user.id, "groups")
+    if not has_perm:
+        await message.reply("❌ คุณไม่มีสิทธิ์เข้าถึงคำสั่งนี้")
+        return
+
+    is_chat_group = message.chat.type in ["group", "supergroup"]
+    args = message.text.split(maxsplit=2)
+    
+    group_id = None
+    acc_to_del = None
+    
+    if is_chat_group:
+        group_id = message.chat.id
+        if len(args) < 2:
+            await message.reply("💡 **วิธีใช้งาน:** `/delaccount <เลขบัญชี>`")
+            return
+        acc_to_del = message.text.split(maxsplit=1)[1].strip()
+    else:
+        if len(args) < 3:
+            await message.reply("💡 **วิธีใช้งาน:** `/delaccount <group_id> <เลขบัญชี>`")
+            return
+        try:
+            group_id = int(args[1])
+        except ValueError:
+            await message.reply("❌ รูปแบบ Group ID ไม่ถูกต้อง")
+            return
+        acc_to_del = args[2].strip()
+
+    g_config = await get_group_config(group_id)
+    if not g_config:
+        await message.reply(f"❌ ไม่พบกลุ่ม ID `{group_id}` ในระบบ")
+        return
+
+    existing = g_config.get("allowed_accounts") or ""
+    if not existing:
+        await message.reply("💡 กลุ่มนี้ยังไม่มีการตั้งค่าเลขบัญชีเฉพาะตัว")
+        return
+
+    clean_del = "".join([c for c in acc_to_del if c.isdigit() or c.lower() in ("x", "*", "_")])
+    sep = "|" if "|" in existing else ","
+    accs_list = [a.strip() for a in existing.split(sep) if a.strip()]
+    
+    new_accs_list = [a for a in accs_list if a != clean_del]
+    
+    if len(new_accs_list) == len(accs_list):
+        await message.reply(f"💡 ไม่พบเลขบัญชี `{clean_acc}` ในการตั้งค่ากลุ่มนี้")
+        return
+
+    new_acc_str = " | ".join(new_accs_list) if new_accs_list else "default"
+    
+    success = await update_group_config(group_id, allowed_accounts=new_acc_str)
+    if success:
+        display_str = f"`{new_acc_str}`" if new_acc_str != "default" else "กลับไปใช้ค่าเริ่มต้นระบบ (Global Fallback)"
+        await message.reply(
+            f"✅ **ลบเลขบัญชีเฉพาะกลุ่มสำเร็จ!**\n"
+            f"• กลุ่ม: **{g_config.get('group_name')}**\n"
+            f"• บัญชีผู้รับโอนปัจจุบัน: {display_str}"
+        )
+    else:
+        await message.reply("❌ เกิดข้อผิดพลาดในการบันทึกข้อมูล")
+
