@@ -55,7 +55,7 @@ async def help_handler(message: types.Message):
         logger.error(f"Error sending help message to user {message.from_user.id}: {e}")
 
 
-@router.message(Command("groupid", "id"))
+@router.message(Command("groupid"))
 async def groupid_handler(message: types.Message):
     """Returns the current chat ID."""
     chat_type = message.chat.type
@@ -65,6 +65,35 @@ async def groupid_handler(message: types.Message):
         f"• **ชื่อแชท**: `{chat_title}`\n"
         f"• **ประเภทแชท**: `{chat_type}`\n"
         f"• **Chat ID**: `{message.chat.id}`",
+        parse_mode="Markdown"
+    )
+
+
+@router.message(Command("myid", "id"))
+async def user_id_handler(message: types.Message):
+    """Returns the user ID of the sender, or the replied-to user."""
+    # Check if this is a reply to another message
+    if message.reply_to_message:
+        target_user = message.reply_to_message.from_user
+        if target_user:
+            u_name = f"@{target_user.username}" if target_user.username else "ไม่มี"
+            await message.reply(
+                f"👤 **ข้อมูลผู้ใช้ที่คุณตอบกลับ:**\n"
+                f"• **ชื่อ**: `{target_user.full_name}`\n"
+                f"• **Username**: `{u_name}`\n"
+                f"• **User ID**: `{target_user.id}`",
+                parse_mode="Markdown"
+            )
+            return
+            
+    # Default: Return sender's own info
+    user = message.from_user
+    u_name = f"@{user.username}" if user.username else "ไม่มี"
+    await message.reply(
+        f"👤 **ข้อมูลผู้ใช้ของคุณ:**\n"
+        f"• **ชื่อ**: `{user.full_name}`\n"
+        f"• **Username**: `{u_name}`\n"
+        f"• **User ID**: `{user.id}`",
         parse_mode="Markdown"
     )
 
