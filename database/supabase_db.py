@@ -707,3 +707,81 @@ async def check_admin_permission(user_id: int, required_permission: str | None =
         
     return False
 
+
+def _db_count_sender_today(sender_name: str | None, sender_account: str | None) -> tuple[int, list[dict]]:
+    """
+    Synchronously queries the database to count transaction slips uploaded today (Thai Time)
+    that match either the sender account (matching last 4 digits) or the fuzzy sender name.
+    
+    Returns:
+        (match_count, list_of_matched_transactions_today)
+    """
+    if not _supabase_client:
+        logger.error("Supabase client not initialized.")
+        return 0, []
+        
+    from datetime import datetime, timezone, timedelta
+    from services.risk_engine import clean_thai_name
+    
+    tz_th = timezone(timedelta(hours=7))
+    now_th = datetime.now(tz_th)
+    # Start of today in Bangkok time (00:00:00)
+    today_start_th = now_th.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start_utc = today_start_th.astimezone(timezone.utc).isoformat()
+    
+    try:
+        # Fetch all transactions from today
+        response = _supabase_client.table("transactions")\
+            .select("trans_ref, sender_name, amount, trans_date, raw_ocr, created_at")\
+            .gte("created_at", today_start_utc)\
+            .execute()
+            
+        today_txs = response.data or []
+        matched_txs = []
+        
+        # Prepare helper for checking last 4 digits of sender account
+        def get_last_4_digits(acc_str: str | None) -> str | None:
+            if not acc_str:
+                return None
+            digits = "".join([c for c in str(acc_str) if c.isdigit()])
+            return digits[-4:] if len(digits) >= 4 else None
+
+        target_acc_last4 = get_last_4_digits(sender_account)
+        target_name_clean = clean_thai_name(sender_name) if sender_name else ""
+        # Require name length after cleaning to be at least 4 characters to avoid false positive name matches
+        is_name_valid_for_match = len(target_name_clean) >= 4
+        
+        for tx in today_txs:
+            # Check sender_account from stored raw_ocr JSONB
+            raw_ocr = tx.get("raw_ocr") or {}
+            tx_sender_account = raw_ocr.get("sender_account")
+            tx_acc_last4 = get_last_4_digits(tx_sender_account)
+            
+            # Match 1: Match by account last 4 digits (highly reliable)
+            if target_acc_last4 and tx_acc_last4 and target_acc_last4 == tx_acc_last4:
+                matched_txs.append(tx)
+                continue
+                
+            # Match 2: Fallback to match by clean name substring matching
+            tx_sender_name = tx.get("sender_name")
+            tx_name_clean = clean_thai_name(tx_sender_name) if tx_sender_name else ""
+            
+            if is_name_valid_for_match and len(tx_name_clean) >= 4:
+                if (target_name_clean in tx_name_clean) or (tx_name_clean in target_name_clean):
+                    matched_txs.append(tx)
+                    continue
+                    
+        # Sort matched transactions by creation time ascending
+        matched_txs.sort(key=lambda x: x.get("created_at") or "")
+        
+        return len(matched_txs), matched_txs
+    except Exception as e:
+        logger.error(f"Error counting sender today (name={sender_name}, acc={sender_account}): {e}")
+        return 0, []
+
+
+async def count_sender_today(sender_name: str | None, sender_account: str | None) -> tuple[int, list[dict]]:
+    """Asynchronously counts and returns matching transaction history for today."""
+    return await asyncio.to_thread(_db_count_sender_today, sender_name, sender_account)
+
+

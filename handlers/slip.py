@@ -3,13 +3,15 @@ import logging
 from aiogram import Router, types, Bot
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from config import Config
 from database.supabase_db import (
     check_duplicate, log_transaction, is_group_allowed, get_allowed_groups,
     is_maintenance_mode, get_amount_limits,
     get_slipok_config, get_merchant_names, get_allowed_accounts,
     get_slipok_credentials, update_slipok_credential_status,
-    log_slip_log, check_duplicate_image_hash, check_admin_permission
+    log_slip_log, check_duplicate_image_hash, check_admin_permission,
+    count_sender_today, get_slip_log
 )
 from services.qr_decoder import decode_qr_from_bytes
 from services.vision_ai import extract_slip_details
@@ -19,6 +21,71 @@ from services.slipok import verify_slip_via_slipok
 
 logger = logging.getLogger("SlipBot.Handlers.Slip")
 router = Router()
+
+import time
+import hashlib
+import datetime
+import secrets
+
+def format_to_be_datetime(dt_str: str | None) -> str:
+    """
+    Formats an input date-time string into Buddhist Era (BE) format YYYY-MM-DD HH:MM:SS
+    (e.g., 2026-07-15 14:46:00 -> 2569-07-15 14:46:00).
+    If empty, returns the current Thai local date-time in BE.
+    """
+    tz_th = datetime.timezone(datetime.timedelta(hours=7))
+    now_th = datetime.datetime.now(tz_th)
+    
+    if not dt_str or str(dt_str).strip() in ("", "null", "None", "ไม่ระบุ", "ไม่ระบุวันเวลา"):
+        # Format current time to BE YYYY-MM-DD HH:MM:SS
+        be_year = now_th.year + 543
+        return f"{be_year}-{now_th.strftime('%m-%d %H:%M:%S')}"
+        
+    cleaned_dt = str(dt_str).strip()
+    parsed_date = None
+
+    # Try ISO 8601
+    try:
+        parsed_date = datetime.datetime.fromisoformat(cleaned_dt.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        pass
+
+    if not parsed_date:
+        formats_to_try = [
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%dT%H:%M:%S",
+            "%d/%m/%Y %H:%M:%S",
+            "%d/%m/%Y %H:%M",
+            "%d/%m/%Y",
+            "%Y-%m-%d",
+        ]
+        for fmt in formats_to_try:
+            try:
+                parsed_date = datetime.datetime.strptime(cleaned_dt[:len(fmt)], fmt)
+                break
+            except (ValueError, TypeError):
+                continue
+
+    if not parsed_date:
+        # Fallback to returning string but trying to convert year if it starts with 20xx
+        if len(cleaned_dt) >= 4 and cleaned_dt[:2] == "20" and cleaned_dt[2:4].isdigit():
+            try:
+                year_ad = int(cleaned_dt[:4])
+                year_be = year_ad + 543
+                return f"{year_be}{cleaned_dt[4:]}"
+            except ValueError:
+                pass
+        return cleaned_dt
+
+    # Ensure timezone aware
+    if parsed_date.tzinfo is None:
+        parsed_date = parsed_date.replace(tzinfo=tz_th)
+    else:
+        parsed_date = parsed_date.astimezone(tz_th)
+
+    be_year = parsed_date.year + 543
+    return f"{be_year}-{parsed_date.strftime('%m-%d %H:%M:%S')}"
+
 
 import time
 import hashlib
@@ -161,26 +228,23 @@ async def process_slip_image(message: types.Message, bot: Bot):
 
     processing_msg = None
 
-    # Helper function that automatically appends the Slip ID footer
-    async def reply_message(text: str, force_new=False, parse_mode="Markdown"):
+
+    # Helper function to send or edit messages with support for Inline Keyboard reply_markup
+    async def reply_message(text: str, force_new=False, parse_mode="Markdown", reply_markup=None):
         nonlocal processing_msg
-        footer = f"\n\n🆔 **Slip ID**: `{slip_id}`"
-        full_text = text + footer
         if processing_msg and not force_new:
             try:
-                return await processing_msg.edit_text(full_text, parse_mode=parse_mode)
+                return await processing_msg.edit_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
             except Exception as edit_err:
                 logger.warning(f"Failed to edit message, sending new: {edit_err}")
-                sent_msg = await message.reply(full_text, parse_mode=parse_mode)
+                sent_msg = await message.reply(text, parse_mode=parse_mode, reply_markup=reply_markup)
                 processing_msg = sent_msg
                 return sent_msg
         else:
-            sent_msg = await message.reply(full_text, parse_mode=parse_mode)
+            sent_msg = await message.reply(text, parse_mode=parse_mode, reply_markup=reply_markup)
             if not processing_msg:
                 processing_msg = sent_msg
-            return sent_msg
-
-    # Rate Limiting Check (20 images/minute/user)
+            return sent_msg   # Rate Limiting Check (20 images/minute/user)
     if not check_rate_limit(message.from_user.id, limit=20, period=60):
         await reply_message(
             "🚨 **กรุณาอย่าส่งสแปมภาพสลิป!**\nจำกัดไม่เกิน 20 รูปต่อนาที กรุณารอ 1 นาทีแล้วลองใหม่อีกครั้ง",
@@ -546,6 +610,11 @@ async def process_slip_image(message: types.Message, bot: Bot):
                         await save_audit_log("FAIL", f"Duplicate reference check: {s_ref}", "DUPLICATE")
                         return
 
+                    # Extract sender account from SlipOK raw response if possible
+                    s_acc = None
+                    if verify_res.get("raw") and isinstance(verify_res["raw"], dict):
+                        s_acc = verify_res["raw"].get("data", {}).get("sender", {}).get("account", {}).get("value")
+
                     # Log to database
                     db_logged = await log_transaction(
                         trans_ref=s_ref,
@@ -553,28 +622,37 @@ async def process_slip_image(message: types.Message, bot: Bot):
                         receiver_name=verify_res["receiver_name"],
                         amount=verify_res["amount"],
                         trans_date=verify_res["trans_date"],
-                        raw_ocr=verify_res["raw"]
+                        raw_ocr={**(verify_res.get("raw") or {}), "sender_account": s_acc}
                     )
                     db_status = "⚙️💾✅" if db_logged else "⚙️💾❌"
+                    
+                    # Fetch sender stats for today
+                    sender_count, _ = await count_sender_today(verify_res["sender_name"], s_acc)
+                    
+                    # Format BE date-time
+                    be_date_str = format_to_be_datetime(verify_res["trans_date"])
                     
                     # Formatting only SlipOK data
                     s_bank = get_bank_name(verify_res["sending_bank"])
                     s_sender = mask_name(verify_res["sender_name"])
                     
+                    # Compact message format
                     success_text = (
                         f"🟢 **สลิปจริง! (ยืนยันตรงกับระบบธนาคาร)** {db_status}\n\n"
-                        f"🏦 **ธนาคารต้นทาง**: `{s_bank}`\n"
-                        f"👤 **ผู้โอน**: `{s_sender}`\n"
-                        f"🏢 **ผู้รับโอน**: `{verify_res['receiver_name']}`\n"
-                        f"💵 **จำนวนเงิน**: `{verify_res['amount']:,.2f} THB`\n"
-                        f"📅 **วันเวลา**: `{verify_res['trans_date']}`\n"
-                        f"🔑 **รหัสอ้างอิง**: `{s_ref}`\n\n"
-                        f"🔎 *ข้อมูลนี้ยืนยันตรงกับระบบธนาคารผ่าน SlipOK*\n\n"
+                        f"👤 {s_sender} ➔ {verify_res['receiver_name']}\n"
+                        f"💵 **{verify_res['amount']:,.2f} THB**\n"
+                        f"📅 วันเวลา: `{be_date_str}` · 🏦 {s_bank}\n"
+                        f"📊 วันนี้: `{sender_count} ครั้ง` ⚠️\n\n"
                         f"⚠️ *ผลนี้ใช้สำหรับตรวจสอบความถูกต้องของสลิปเท่านั้น*\n"
                         f"*กรุณาให้ผู้ดูแลระบบยืนยันการรับเงินอีกครั้งก่อนดำเนินการ*"
                     )
                     
-                    await reply_message(success_text)
+                    # Add inline button for details
+                    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="📋 ดูรายละเอียดทั้งหมด", callback_data=f"detail:{slip_id}")]
+                    ])
+                    
+                    await reply_message(success_text, reply_markup=keyboard)
                     logger.info(f"Verified slip via SlipOK successfully: {s_ref} | Amount: {verify_res['amount']}")
                     
                     # Fill audit checks
@@ -654,16 +732,25 @@ async def process_slip_image(message: types.Message, bot: Bot):
         amount = ocr_clean.get("amount") if ocr_clean else 0.0
         trans_date = ocr_clean.get("trans_date") if ocr_clean else None
         
+        # Extract sender account from OCR if possible
+        s_acc = ocr_clean.get("sender_account") if ocr_clean else None
+
         db_logged = await log_transaction(
             trans_ref=trans_ref,
             sender_name=sender_name,
             receiver_name=receiver_name,
             amount=amount,
             trans_date=trans_date,
-            raw_ocr=ocr_clean
+            raw_ocr={**(ocr_clean or {}), "sender_account": s_acc}
         )
         
         db_status = "⚙️💾✅" if db_logged else "⚙️💾❌"
+        
+        # Fetch sender stats for today
+        sender_count, _ = await count_sender_today(sender_name, s_acc)
+        
+        # Format BE date-time
+        be_date_str = format_to_be_datetime(trans_date)
         
         if qr_data:
             qr_bank = get_bank_name(qr_data.get("sending_bank"))
@@ -693,18 +780,24 @@ async def process_slip_image(message: types.Message, bot: Bot):
             audit_checks["receiver_match"] = True
         audit_checks["amount_match"] = True
 
+        # Mask sender name
+        s_sender = mask_name(sender_name)
+
         success_text = (
             f"🟡 **สลิปน่าจะเป็นของจริง (ตรวจสอบเบื้องต้น)** {db_status}\n\n"
-            f"👤 **ผู้โอน**: `{sender_name}`\n"
-            f"🏢 **ผู้รับโอน**: `{receiver_name}`\n"
-            f"💵 **จำนวนเงิน**: `{amount:,.2f} THB`{amount_suffix}\n"
-            f"📅 **วันเวลา**: `{trans_date or 'ไม่ระบุ'}`\n"
-            f"🔑 **รหัสอ้างอิง**: `{trans_ref}`\n\n"
-            f"{qr_status_text}"
+            f"👤 {s_sender} ➔ {receiver_name}\n"
+            f"💵 **{amount:,.2f} THB**{amount_suffix}\n"
+            f"📅 วันเวลา: `{be_date_str}`\n"
+            f"📊 วันนี้: `{sender_count} ครั้ง` ⚠️\n\n"
             f"{disclaimer}"
         )
         
-        await reply_message(success_text)
+        # Add inline button for details
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📋 ดูรายละเอียดทั้งหมด", callback_data=f"detail:{slip_id}")]
+        ])
+        
+        await reply_message(success_text, reply_markup=keyboard)
         logger.info(f"Verified slip successfully (local fallback): {trans_ref} | Amount: {amount}")
         await save_audit_log("PASS")
 
@@ -719,3 +812,155 @@ async def process_slip_image(message: types.Message, bot: Bot):
                 
         risk_score = 100
         await save_audit_log("ERROR", str(e), "INTERNAL_ERROR")
+
+
+@router.callback_query(lambda c: c.data.startswith("detail:"))
+async def process_detail_callback(callback_query: CallbackQuery):
+    slip_id = callback_query.data.split(":")[1]
+    
+    # Retrieve slip log from database
+    slip_log = await get_slip_log(slip_id)
+    if not slip_log:
+        await callback_query.answer("❌ ไม่พบข้อมูลสลิปนี้ในระบบ", show_alert=True)
+        return
+        
+    ocr_res = slip_log.get("ocr_result") or {}
+    slipok_res = slip_log.get("slipok_result") or {}
+    qr_res = slip_log.get("qr_result") or {}
+    risk_res = slip_log.get("risk_result") or {}
+    provider = risk_res.get("provider_used", "LOCAL")
+    
+    sender_name = ocr_res.get("sender_name") or slipok_res.get("sender_name") or "ไม่ระบุ"
+    sender_acc = ocr_res.get("sender_account") or (slipok_res.get("raw", {}).get("data", {}).get("sender", {}).get("account", {}).get("value") if slipok_res else None) or "ไม่ระบุ"
+    
+    receiver_name = ocr_res.get("receiver_name") or slipok_res.get("receiver_name") or "ไม่ระบุ"
+    receiver_acc = ocr_res.get("receiver_account") or slipok_res.get("receiver_account") or "ไม่ระบุ"
+    
+    amount = slip_log.get("amount") or 0.0
+    trans_date = ocr_res.get("trans_date") or slipok_res.get("trans_date")
+    be_date_str = format_to_be_datetime(trans_date)
+    
+    trans_ref = slip_log.get("reference") or "ไม่ระบุ"
+    sending_bank_code = qr_res.get("sending_bank") or (slipok_res.get("sending_bank") if slipok_res else None)
+    bank_name = get_bank_name(sending_bank_code)
+    
+    # Fetch today stats
+    sender_count, matched_txs = await count_sender_today(sender_name, sender_acc if sender_acc != "ไม่ระบุ" else None)
+    
+    # Build detailed text message
+    detail_text = (
+        f"📋 **รายละเอียดข้อมูลสลิปแบบเต็ม**\n"
+        f"🆔 `Slip ID: {slip_id}`\n\n"
+        f"🏦 **ธนาคาร**: `{bank_name}`\n"
+        f"👤 **ผู้โอน**: `{sender_name}`\n"
+        f"💳 **บัญชีผู้โอน**: `{sender_acc}`\n"
+        f"🏢 **ผู้รับ**: `{receiver_name}`\n"
+        f"💳 **บัญชีผู้รับ**: `{receiver_acc}`\n"
+        f"💵 **ยอดเงิน**: `{amount:,.2f} THB`\n"
+        f"📅 **วันเวลาโอน**: `{be_date_str}`\n"
+        f"🔑 **รหัสอ้างอิง**: `{trans_ref}`\n\n"
+    )
+    
+    if provider == "SLIPOK":
+        detail_text += "🔎 **ผลตรวจสอบ**: ✅ ยืนยันตรงกับธนาคารผ่าน SlipOK\n"
+    else:
+        qr_status = "✅ พบ QR (ตรงกัน)" if qr_res else "⚠️ ไม่พบ QR Code"
+        detail_text += f"🔎 **ผล QR**: `{qr_status}`\n🔎 **ผล OCR**: `✅ อ่านข้อความสำเร็จ`\n"
+        
+    detail_text += f"\n📊 **ประวัติการโอนวันนี้**:\n"
+    detail_text += f"└─ ทั้งหมด: `{sender_count} ครั้ง`\n"
+    
+    # Show last 5 transaction records for this sender today
+    for i, tx in enumerate(matched_txs[:5], 1):
+        tx_amount = tx.get("amount") or 0.0
+        tx_time = "ไม่ระบุ"
+        tx_created = tx.get("created_at")
+        if tx_created:
+            try:
+                from datetime import datetime, timezone, timedelta
+                dt = datetime.fromisoformat(tx_created.replace("Z", "+00:00")).astimezone(timezone(timedelta(hours=7)))
+                tx_time = dt.strftime("%H:%M:%S")
+            except Exception:
+                pass
+        curr_mark = " (รายการนี้)" if tx.get("trans_ref") == trans_ref else ""
+        detail_text += f"   {i}️⃣ {tx_amount:,.2f} THB ({tx_time}){curr_mark}\n"
+        
+    if len(matched_txs) > 5:
+        detail_text += f"   ... และรายการอื่นอีก {len(matched_txs) - 5} รายการ\n"
+        
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="↩️ ย่อข้อความ", callback_data=f"summary:{slip_id}")]
+    ])
+    
+    try:
+        await callback_query.message.edit_text(detail_text, parse_mode="Markdown", reply_markup=keyboard)
+    except Exception as e:
+        logger.error(f"Failed to edit callback detail message: {e}")
+    await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith("summary:"))
+async def process_summary_callback(callback_query: CallbackQuery):
+    slip_id = callback_query.data.split(":")[1]
+    
+    slip_log = await get_slip_log(slip_id)
+    if not slip_log:
+        await callback_query.answer("❌ ไม่พบข้อมูลสลิปนี้ในระบบ", show_alert=True)
+        return
+        
+    ocr_res = slip_log.get("ocr_result") or {}
+    slipok_res = slip_log.get("slipok_result") or {}
+    qr_res = slip_log.get("qr_result") or {}
+    risk_res = slip_log.get("risk_result") or {}
+    provider = risk_res.get("provider_used", "LOCAL")
+    
+    sender_name = ocr_res.get("sender_name") or slipok_res.get("sender_name") or "ไม่ระบุ"
+    sender_acc = ocr_res.get("sender_account") or (slipok_res.get("raw", {}).get("data", {}).get("sender", {}).get("account", {}).get("value") if slipok_res else None)
+    
+    receiver_name = ocr_res.get("receiver_name") or slipok_res.get("receiver_name") or "ไม่ระบุ"
+    amount = slip_log.get("amount") or 0.0
+    trans_date = ocr_res.get("trans_date") or slipok_res.get("trans_date")
+    be_date_str = format_to_be_datetime(trans_date)
+    
+    sending_bank_code = qr_res.get("sending_bank") or (slipok_res.get("sending_bank") if slipok_res else None)
+    bank_name = get_bank_name(sending_bank_code)
+    
+    sender_count, _ = await count_sender_today(sender_name, sender_acc)
+    
+    s_sender = mask_name(sender_name)
+    
+    if provider == "SLIPOK":
+        success_text = (
+            f"🟢 **สลิปจริง! (ยืนยันตรงกับระบบธนาคาร)** ⚙️💾✅\n\n"
+            f"👤 {s_sender} ➔ {receiver_name}\n"
+            f"💵 **{amount:,.2f} THB**\n"
+            f"📅 วันเวลา: `{be_date_str}` · 🏦 {bank_name}\n"
+            f"📊 วันนี้: `{sender_count} ครั้ง` ⚠️\n\n"
+            f"⚠️ *ผลนี้ใช้สำหรับตรวจสอบความถูกต้องของสลิปเท่านั้น*\n"
+            f"*กรุณาให้ผู้ดูแลระบบยืนยันการรับเงินอีกครั้งก่อนดำเนินการ*"
+        )
+    else:
+        disclaimer = (
+            "\n\n⚠️ *ผลนี้เป็นการตรวจสอบเบื้องต้นจาก QR Code และ OCR เท่านั้น ยังไม่ได้ยืนยันกับธนาคารโดยตรง*\n"
+            "*กรุณาให้ผู้ดูแลระบบยืนยันการรับเงินอีกครั้งก่อนดำเนินการ*"
+        )
+        
+        success_text = (
+            f"🟡 **สลิปน่าจะเป็นของจริง (ตรวจสอบเบื้องต้น)** ⚙️💾✅\n\n"
+            f"👤 {s_sender} ➔ {receiver_name}\n"
+            f"💵 **{amount:,.2f} THB**\n"
+            f"📅 วันเวลา: `{be_date_str}`\n"
+            f"📊 วันนี้: `{sender_count} ครั้ง` ⚠️\n\n"
+            f"{disclaimer}"
+        )
+        
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📋 ดูรายละเอียดทั้งหมด", callback_data=f"detail:{slip_id}")]
+    ])
+    
+    try:
+        await callback_query.message.edit_text(success_text, parse_mode="Markdown", reply_markup=keyboard)
+    except Exception as e:
+        logger.error(f"Failed to edit callback summary message: {e}")
+    await callback_query.answer()
+
