@@ -12,7 +12,7 @@ from database.supabase_db import (
     get_merchant_names, add_merchant_name, remove_merchant_name, clear_merchant_names,
     get_allowed_accounts, add_allowed_account, remove_allowed_account, clear_allowed_accounts,
     get_slipok_credentials, add_slipok_credential, remove_slipok_credential, reset_all_slipok_credentials,
-    get_slip_log
+    get_slip_log, check_admin_permission, get_bot_admins, add_bot_admin, remove_bot_admin
 )
 
 logger = logging.getLogger("SlipBot.Handlers.Start")
@@ -72,8 +72,9 @@ async def groupid_handler(message: types.Message):
 @router.message(Command("allowgroup"))
 async def allowgroup_handler(message: types.Message):
     """Registers the current group as whitelisted in Supabase."""
-    # Check if the user is an admin
-    if message.from_user.id not in Config.ADMIN_USER_IDS:
+    # Check if the user has groups permission
+    has_perm = await check_admin_permission(message.from_user.id, "groups")
+    if not has_perm:
         await message.reply("❌ คุณไม่มีสิทธิ์เข้าถึงคำสั่งนี้")
         return
 
@@ -102,8 +103,9 @@ async def allowgroup_handler(message: types.Message):
 @router.message(Command("disallowgroup"))
 async def disallowgroup_handler(message: types.Message):
     """Removes a group from the whitelist in Supabase."""
-    # Check if the user is an admin
-    if message.from_user.id not in Config.ADMIN_USER_IDS:
+    # Check if the user has groups permission
+    has_perm = await check_admin_permission(message.from_user.id, "groups")
+    if not has_perm:
         await message.reply("❌ คุณไม่มีสิทธิ์เข้าถึงคำสั่งนี้")
         return
 
@@ -128,8 +130,9 @@ async def disallowgroup_handler(message: types.Message):
 @router.message(Command("groups"))
 async def groups_handler(message: types.Message):
     """Lists all whitelisted groups."""
-    # Check if the user is an admin
-    if message.from_user.id not in Config.ADMIN_USER_IDS:
+    # Check if the user has groups permission
+    has_perm = await check_admin_permission(message.from_user.id, "groups")
+    if not has_perm:
         await message.reply("❌ คุณไม่มีสิทธิ์เข้าถึงคำสั่งนี้")
         return
 
@@ -150,8 +153,9 @@ async def groups_handler(message: types.Message):
 @router.message(Command("maintenance"))
 async def maintenance_handler(message: types.Message):
     """Admin command to toggle maintenance mode (เปิด/ปิด บอท)."""
-    # Check if the user is an admin
-    if message.from_user.id not in Config.ADMIN_USER_IDS:
+    # Check if the user has maintenance permission
+    has_perm = await check_admin_permission(message.from_user.id, "maintenance")
+    if not has_perm:
         await message.reply("❌ คุณไม่มีสิทธิ์เข้าถึงคำสั่งนี้")
         return
 
@@ -190,8 +194,9 @@ async def maintenance_handler(message: types.Message):
 @router.message(Command("limit"))
 async def limit_handler(message: types.Message):
     """Admin command to configure normal transaction amount limits (ช่วงยอดเงินปกติ)."""
-    # Check if the user is an admin
-    if message.from_user.id not in Config.ADMIN_USER_IDS:
+    # Check if the user has limit permission
+    has_perm = await check_admin_permission(message.from_user.id, "limit")
+    if not has_perm:
         await message.reply("❌ คุณไม่มีสิทธิ์เข้าถึงคำสั่งนี้")
         return
 
@@ -241,8 +246,9 @@ async def limit_handler(message: types.Message):
 @router.message(Command("merchant"))
 async def merchant_handler(message: types.Message):
     """Admin command to configure the merchant receiver name (ชื่อผู้รับโอน)."""
-    # Check if the user is an admin
-    if message.from_user.id not in Config.ADMIN_USER_IDS:
+    # Check if the user has merchant permission
+    has_perm = await check_admin_permission(message.from_user.id, "merchant")
+    if not has_perm:
         await message.reply("❌ คุณไม่มีสิทธิ์เข้าถึงคำสั่งนี้")
         return
 
@@ -500,8 +506,9 @@ async def slipok_handler(message: types.Message):
 @router.message(Command("account"))
 async def account_handler(message: types.Message):
     """Admin command to configure whitelisted allowed receiver account numbers."""
-    # Check if the user is an admin
-    if message.from_user.id not in Config.ADMIN_USER_IDS:
+    # Check if the user has account permission
+    has_perm = await check_admin_permission(message.from_user.id, "account")
+    if not has_perm:
         await message.reply("❌ คุณไม่มีสิทธิ์เข้าถึงคำสั่งนี้")
         return
 
@@ -563,8 +570,9 @@ async def account_handler(message: types.Message):
 @router.message(Command("slipinfo"))
 async def slip_info_handler(message: types.Message):
     """Admin command to query detailed slip verification logs by Slip ID."""
-    # Check if the user is an admin
-    if message.from_user.id not in Config.ADMIN_USER_IDS:
+    # Check if the user has slipinfo permission
+    has_perm = await check_admin_permission(message.from_user.id, "slipinfo")
+    if not has_perm:
         await message.reply("❌ คุณไม่มีสิทธิ์เข้าถึงคำสั่งนี้")
         return
 
@@ -641,3 +649,134 @@ async def slip_info_handler(message: types.Message):
         response_text = response_text[:3900] + "\n\n... (ข้อมูลยาวเกินขนาดการแสดงผลบน Telegram) ..."
 
     await message.reply(response_text, parse_mode="Markdown")
+
+
+@router.message(Command("admin"))
+async def admin_management_handler(message: types.Message):
+    """Super Admin command to manage bot co-admins and their permissions."""
+    # Strictly limited to hardcoded Super Admins for security
+    if message.from_user.id not in Config.ADMIN_USER_IDS:
+        await message.reply("❌ คุณไม่มีสิทธิ์เข้าถึงคำสั่งนี้")
+        return
+
+    args = message.text.split(maxsplit=4)
+    if len(args) < 2:
+        help_text = (
+            "🔑 **ระบบจัดการสิทธิ์แอดมินบอท (Admin Permissions Manager)**\n\n"
+            "💡 **วิธีใช้งานสำหรับ Super Admin:**\n"
+            "• `/admin list` : ดูรายชื่อแอดมินทั้งหมดและสิทธิ์\n"
+            "• `/admin add <user_id> <permissions> [username]` : เพิ่มแอดมินรอง\n"
+            "• `/admin remove <user_id>` : ลบแอดมินรองออกจากระบบ\n\n"
+            "📋 **คำสั่งที่สามารถกำหนดสิทธิ์ได้ (Valid Permissions):**\n"
+            "• `stats` : ดูสถิติสลิปสะสม (`/stats`)\n"
+            "• `slipinfo` : ค้นหารายละเอียดสลิปดิบ (`/slipinfo`)\n"
+            "• `groups` : จัดการกลุ่มแชท (`/allowgroup`, `/disallowgroup`, `/groups`)\n"
+            "• `maintenance` : เปิด/ปิดบอท (`/maintenance`)\n"
+            "• `limit` : ตั้งค่าขีดจำกัดจำนวนเงินยอดโอน (`/limit`)\n"
+            "• `merchant` : ตั้งชื่อร้านผู้รับโอน (`/merchant`)\n"
+            "• `account` : ตั้งเลขบัญชีธนาคารปลายทาง (`/account`)\n\n"
+            "💡 *ตัวอย่างการเพิ่มสิทธิ์*: `/admin add 12345678 stats,groups somchai`"
+        )
+        await message.reply(help_text, parse_mode="Markdown")
+        return
+
+    subcommand = args[1].lower()
+
+    if subcommand == "list":
+        admins = await get_bot_admins()
+        if not admins:
+            admins_text = "• ยังไม่มีการตั้งค่าแอดมินรองในระบบ"
+        else:
+            lines = []
+            for i, adm in enumerate(admins, 1):
+                role_label = "👑 Super Admin" if adm.get("role") == "super_admin" else "👤 Co-Admin"
+                u_id = adm.get("user_id")
+                u_name = f" (@{adm.get('username')})" if adm.get("username") else ""
+                perms = adm.get("permissions") or []
+                perms_str = ", ".join(perms) if perms else "ไม่มีสิทธิ์"
+                lines.append(f"{i}. ID: `{u_id}`{u_name}\n    • บทบาท: `{role_label}`\n    • สิทธิ์: `{perms_str}`")
+            admins_text = "\n\n".join(lines)
+
+        # Also show hardcoded Super Admins from env
+        env_admins = []
+        for i, env_id in enumerate(Config.ADMIN_USER_IDS, 1):
+            env_admins.append(f"{i}. ID: `{env_id}` (ระบุใน .env)")
+        env_admins_text = "\n".join(env_admins)
+
+        await message.reply(
+            f"🔑 **รายชื่อแอดมินระบบทั้งหมด:**\n\n"
+            f"👑 **Super Admins หลัก (จากไฟล์ Config):**\n"
+            f"{env_admins_text}\n\n"
+            f"👤 **แอดมินในฐานข้อมูล (Database Admins):**\n"
+            f"{admins_text}",
+            parse_mode="Markdown"
+        )
+        return
+
+    elif subcommand == "add":
+        if len(args) < 4:
+            await message.reply("💡 **วิธีใช้งาน:** `/admin add <user_id> <permissions> [username]`\nเช่น: `/admin add 12345678 stats,groups somchai`")
+            return
+        
+        try:
+            target_id = int(args[2])
+        except ValueError:
+            await message.reply("❌ รูปแบบ User ID ไม่ถูกต้อง กรุณากรอกเป็นตัวเลข")
+            return
+
+        raw_perms = args[3].strip().lower().split(",")
+        perms_to_add = []
+        invalid_perms = []
+        
+        VALID_PERMISSIONS = {"stats", "slipinfo", "groups", "maintenance", "limit", "merchant", "account"}
+        
+        for p in raw_perms:
+            p_clean = p.strip()
+            if not p_clean:
+                continue
+            if p_clean in VALID_PERMISSIONS:
+                perms_to_add.append(p_clean)
+            else:
+                invalid_perms.append(p_clean)
+                
+        if invalid_perms:
+            await message.reply(
+                f"❌ พบสิทธิ์ที่ไม่ถูกต้อง: `{', '.join(invalid_perms)}`\n"
+                f"💡 คำสั่งสิทธิ์ที่กรอกได้คือ: `stats`, `slipinfo`, `groups`, `maintenance`, `limit`, `merchant`, `account`"
+            )
+            return
+            
+        username = args[4].strip() if len(args) > 4 else None
+        
+        success = await add_bot_admin(target_id, username, "co_admin", perms_to_add)
+        if success:
+            perms_str = ", ".join(perms_to_add) if perms_to_add else "ไม่มีสิทธิ์"
+            u_name_str = f" (@{username})" if username else ""
+            await message.reply(
+                f"✅ **แต่งตั้งแอดมินรอง (Co-Admin) สำเร็จ!**\n\n"
+                f"• **User ID**: `{target_id}`{u_name_str}\n"
+                f"• **สิทธิ์ใช้งาน**: `{perms_str}`",
+                parse_mode="Markdown"
+            )
+        else:
+            await message.reply("❌ เกิดข้อผิดพลาดในการบันทึกข้อมูลสิทธิ์ลงฐานข้อมูล")
+
+    elif subcommand == "remove":
+        if len(args) < 3:
+            await message.reply("💡 **วิธีใช้งาน:** `/admin remove <user_id>`")
+            return
+            
+        try:
+            target_id = int(args[2])
+        except ValueError:
+            await message.reply("❌ รูปแบบ User ID ไม่ถูกต้อง กรุณากรอกเป็นตัวเลข")
+            return
+            
+        success = await remove_bot_admin(target_id)
+        if success:
+            await message.reply(f"✅ **ยกเลิกความเป็นแอดมินของ ID `{target_id}` สำเร็จ!**")
+        else:
+            await message.reply("❌ เกิดข้อผิดพลาดในการลบข้อมูลออกจากฐานข้อมูล")
+            
+    else:
+        await message.reply("❌ คำสั่งย่อยไม่ถูกต้อง กรุณากรอกคำสั่งให้ถูกต้องตามคู่มือการใช้งานของ `/admin`")

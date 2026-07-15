@@ -9,7 +9,7 @@ from database.supabase_db import (
     is_maintenance_mode, get_amount_limits,
     get_slipok_config, get_merchant_names, get_allowed_accounts,
     get_slipok_credentials, update_slipok_credential_status,
-    log_slip_log, check_duplicate_image_hash
+    log_slip_log, check_duplicate_image_hash, check_admin_permission
 )
 from services.qr_decoder import decode_qr_from_bytes
 from services.vision_ai import extract_slip_details
@@ -62,8 +62,9 @@ def mask_name(name: str) -> str:
 @router.message(Command("stats"))
 async def stats_handler(message: types.Message):
     """Admin command to show bot statistics."""
-    # Check if the user is an admin
-    if message.from_user.id not in Config.ADMIN_USER_IDS:
+    # Check if the user has stats permission
+    has_perm = await check_admin_permission(message.from_user.id, "stats")
+    if not has_perm:
         await message.reply("❌ คุณไม่มีสิทธิ์เข้าถึงคำสั่งนี้")
         return
 
@@ -207,9 +208,12 @@ async def process_slip_image(message: types.Message, bot: Bot):
         })
         return
 
+    # Check admin role once for maintenance and private chat lockdown bypass
+    is_admin = await check_admin_permission(message.from_user.id)
+
     # Check maintenance mode first
     is_maint = await is_maintenance_mode()
-    if is_maint and message.from_user.id not in Config.ADMIN_USER_IDS:
+    if is_maint and not is_admin:
         await message.reply(
             "🛠️ **ระบบตรวจสอบสลิปอยู่ในระหว่างการปิดปรับปรุงชั่วคราว**\nขออภัยในความไม่สะดวก กรุณาส่งสลิปเข้ามาใหม่อีกครั้งในภายหลัง",
             parse_mode="Markdown"
@@ -230,7 +234,7 @@ async def process_slip_image(message: types.Message, bot: Bot):
             return
     else:
         # Private chat: Lockdown for non-admins
-        if message.from_user.id not in Config.ADMIN_USER_IDS:
+        if not is_admin:
             await message.reply("⚠️ หากต้องการใช้งานระบบ Slip Verify ติดต่อ Florentino")
             return
 

@@ -616,3 +616,94 @@ async def get_slip_log(slip_id: str) -> dict | None:
 async def check_duplicate_image_hash(image_hash: str) -> bool:
     return await asyncio.to_thread(_db_check_duplicate_image_hash, image_hash)
 
+
+def _db_get_bot_admins() -> list[dict]:
+    if not _supabase_client:
+        return []
+    try:
+        response = _supabase_client.table("bot_admins").select("*").order("created_at").execute()
+        return response.data
+    except Exception as e:
+        logger.error(f"Error fetching bot admins: {e}")
+        return []
+
+def _db_get_bot_admin(user_id: int) -> dict | None:
+    if not _supabase_client:
+        return None
+    try:
+        response = _supabase_client.table("bot_admins").select("*").eq("user_id", user_id).execute()
+        if response.data:
+            return response.data[0]
+        return None
+    except Exception as e:
+        logger.error(f"Error fetching bot admin {user_id}: {e}")
+        return None
+
+def _db_add_bot_admin(user_id: int, username: str | None, role: str, permissions: list[str]) -> bool:
+    if not _supabase_client:
+        return False
+    try:
+        data = {
+            "user_id": user_id,
+            "username": username,
+            "role": role,
+            "permissions": permissions
+        }
+        _supabase_client.table("bot_admins").upsert(data).execute()
+        return True
+    except Exception as e:
+        logger.error(f"Error adding/updating bot admin {user_id}: {e}")
+        return False
+
+def _db_remove_bot_admin(user_id: int) -> bool:
+    if not _supabase_client:
+        return False
+    try:
+        _supabase_client.table("bot_admins").delete().eq("user_id", user_id).execute()
+        return True
+    except Exception as e:
+        logger.error(f"Error removing bot admin {user_id}: {e}")
+        return False
+
+
+async def get_bot_admins() -> list[dict]:
+    return await asyncio.to_thread(_db_get_bot_admins)
+
+async def get_bot_admin(user_id: int) -> dict | None:
+    return await asyncio.to_thread(_db_get_bot_admin, user_id)
+
+async def add_bot_admin(user_id: int, username: str | None, role: str, permissions: list[str]) -> bool:
+    return await asyncio.to_thread(_db_add_bot_admin, user_id, username, role, permissions)
+
+async def remove_bot_admin(user_id: int) -> bool:
+    return await asyncio.to_thread(_db_remove_bot_admin, user_id)
+
+async def check_admin_permission(user_id: int, required_permission: str | None = None) -> bool:
+    """
+    Checks if a user has admin access.
+    - If user_id is in Config.ADMIN_USER_IDS, returns True (Super Admin).
+    - Checks bot_admins table:
+      - If user role is 'super_admin', returns True.
+      - If user role is 'co_admin' and required_permission is in permissions list, returns True.
+      - If required_permission is None, returns True (since they are at least a co_admin).
+    """
+    if user_id in Config.ADMIN_USER_IDS:
+        return True
+        
+    admin = await get_bot_admin(user_id)
+    if not admin:
+        return False
+        
+    if admin.get("role") == "super_admin":
+        return True
+        
+    # If it is co_admin
+    if required_permission is None:
+        return True
+        
+    user_perms = admin.get("permissions") or []
+    if required_permission in user_perms:
+        return True
+        
+    return False
+
