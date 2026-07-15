@@ -785,3 +785,53 @@ async def count_sender_today(sender_name: str | None, sender_account: str | None
     return await asyncio.to_thread(_db_count_sender_today, sender_name, sender_account)
 
 
+def _db_get_group_config(group_id: int) -> dict | None:
+    if not _supabase_client:
+        return None
+    try:
+        response = _supabase_client.table("allowed_groups")\
+            .select("group_id, group_name, merchant_name, slipok_mode, allowed_accounts")\
+            .eq("group_id", group_id)\
+            .execute()
+        if response.data:
+            return response.data[0]
+        return None
+    except Exception as e:
+        logger.error(f"Error getting group config for {group_id}: {e}")
+        return None
+
+
+def _db_update_group_config(group_id: int, updates: dict) -> bool:
+    if not _supabase_client:
+        return False
+    try:
+        _supabase_client.table("allowed_groups").update(updates).eq("group_id", group_id).execute()
+        logger.info(f"Group config updated for {group_id}: {updates}")
+        return True
+    except Exception as e:
+        logger.error(f"Error updating group config for {group_id} with {updates}: {e}")
+        return False
+
+
+async def get_group_config(group_id: int) -> dict | None:
+    """Asynchronously fetches the configuration for a given group ID."""
+    return await asyncio.to_thread(_db_get_group_config, group_id)
+
+
+async def update_group_config(group_id: int, merchant_name: str | None = None, slipok_mode: str | None = None, allowed_accounts: str | None = None) -> bool:
+    """Asynchronously updates the configuration parameters for a group."""
+    updates = {}
+    if merchant_name is not None:
+        updates["merchant_name"] = merchant_name if merchant_name != "default" else None
+    if slipok_mode is not None:
+        updates["slipok_mode"] = slipok_mode if slipok_mode != "default" else None
+    if allowed_accounts is not None:
+        updates["allowed_accounts"] = allowed_accounts if allowed_accounts != "default" else None
+        
+    if not updates:
+        return True
+        
+    return await asyncio.to_thread(_db_update_group_config, group_id, updates)
+
+
+

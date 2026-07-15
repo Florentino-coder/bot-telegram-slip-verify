@@ -12,7 +12,8 @@ from database.supabase_db import (
     get_merchant_names, add_merchant_name, remove_merchant_name, clear_merchant_names,
     get_allowed_accounts, add_allowed_account, remove_allowed_account, clear_allowed_accounts,
     get_slipok_credentials, add_slipok_credential, remove_slipok_credential, reset_all_slipok_credentials,
-    get_slip_log, check_admin_permission, get_bot_admins, add_bot_admin, remove_bot_admin
+    get_slip_log, check_admin_permission, get_bot_admins, add_bot_admin, remove_bot_admin,
+    get_group_config, update_group_config
 )
 
 logger = logging.getLogger("SlipBot.Handlers.Start")
@@ -185,7 +186,7 @@ async def disallowgroup_handler(message: types.Message):
 
 @router.message(Command("groups"))
 async def groups_handler(message: types.Message):
-    """Lists all whitelisted groups."""
+    """Lists all whitelisted groups with detailed config info."""
     # Check if the user has groups permission
     has_perm = await check_admin_permission(message.from_user.id, "groups")
     if not has_perm:
@@ -197,13 +198,199 @@ async def groups_handler(message: types.Message):
         await message.reply("👥 **ไม่พบกลุ่มแชทที่ได้รับอนุญาตในฐานข้อมูล**")
         return
 
-    text = "👥 **รายชื่อกลุ่มแชทที่ได้รับอนุญาต:**\n\n"
+    text = "👥 **รายชื่อกลุ่มแชทที่ได้รับอนุญาตและการตั้งค่า:**\n\n"
     for i, g in enumerate(groups_list, 1):
         g_name = g.get("group_name") or "กลุ่มไม่ระบุชื่อ"
         g_id = g.get("group_id")
-        text += f"{i}. `{g_name}` (ID: `{g_id}`)\n"
+        
+        # Query group detailed config
+        g_config = await get_group_config(g_id) or {}
+        g_merchant = g_config.get("merchant_name") or "ใช้ค่าเริ่มต้นของระบบ (Global Fallback)"
+        g_mode = g_config.get("slipok_mode") or "ใช้ค่าเริ่มต้นของระบบ (Global Fallback)"
+        g_accounts = g_config.get("allowed_accounts") or "ใช้ค่าเริ่มต้นของระบบ (Global Fallback)"
+        
+        text += (
+            f"{i}. **{g_name}** (ID: `{g_id}`)\n"
+            f"   • ร้านค้าผู้รับ: `{g_merchant}`\n"
+            f"   • เลขบัญชีรับโอน: `{g_accounts}`\n"
+            f"   • โหมดตรวจสอบ: `{g_mode.upper() if g_mode != 'ใช้ค่าเริ่มต้นของระบบ (Global Fallback)' else g_mode}`\n\n"
+        )
 
     await message.reply(text, parse_mode="Markdown")
+
+
+@router.message(Command("setmerchant"))
+async def set_group_merchant_handler(message: types.Message):
+    """Admin command to configure merchant name for a specific group."""
+    has_perm = await check_admin_permission(message.from_user.id, "groups")
+    if not has_perm:
+        await message.reply("❌ คุณไม่มีสิทธิ์เข้าถึงคำสั่งนี้")
+        return
+
+    is_chat_group = message.chat.type in ["group", "supergroup"]
+    args = message.text.split(maxsplit=2)
+    
+    group_id = None
+    merchant_name = None
+    
+    if is_chat_group:
+        group_id = message.chat.id
+        if len(args) < 2:
+            await message.reply(
+                "💡 **วิธีใช้งาน (พิมพ์ในห้องกลุ่มแชท):**\n"
+                "• `/setmerchant <ชื่อร้าน>` : กำหนดชื่อร้านผู้รับโอนเฉพาะกลุ่มนี้\n"
+                "• `/setmerchant default` : รีเซ็ตกลับไปใช้ค่าเริ่มต้นหลักของบอท"
+            )
+            return
+        merchant_name = message.text.split(maxsplit=1)[1].strip()
+    else:
+        # PM chat: must provide group_id
+        if len(args) < 3:
+            await message.reply(
+                "💡 **วิธีใช้งาน (พิมพ์ในแชทบอทส่วนตัว):**\n"
+                "• `/setmerchant <group_id> <ชื่อร้าน>` : กำหนดร้านผู้รับของกลุ่มนี้\n"
+                "• `/setmerchant <group_id> default` : รีเซ็ตเป็นค่าเริ่มต้นระบบ"
+            )
+            return
+        try:
+            group_id = int(args[1])
+        except ValueError:
+            await message.reply("❌ รูปแบบ Group ID ไม่ถูกต้อง กรุณากรอกเป็นตัวเลขเชิงลบ")
+            return
+        merchant_name = args[2].strip()
+
+    # Check if group is whitelisted
+    g_config = await get_group_config(group_id)
+    if not g_config:
+        await message.reply(f"❌ ไม่พบกลุ่ม ID `{group_id}` ในระบบ หรือกลุ่มนี้ยังไม่ได้รับการอนุญาต")
+        return
+
+    success = await update_group_config(group_id, merchant_name=merchant_name)
+    if success:
+        display_name = f"`{merchant_name}`" if merchant_name.lower() != "default" else "ค่าเริ่มต้นส่วนกลาง (Global Fallback)"
+        await message.reply(
+            f"✅ **อัปเดตชื่อร้านค้าเฉพาะกลุ่มสำเร็จ!**\n"
+            f"• กลุ่ม: **{g_config.get('group_name')}** (ID: `{group_id}`)\n"
+            f"• ชื่อผู้รับโอนที่ยอมรับ: {display_name}"
+        )
+    else:
+        await message.reply("❌ เกิดข้อผิดพลาดในการบันทึกข้อมูลลงฐานข้อมูล")
+
+
+@router.message(Command("setmode"))
+async def set_group_mode_handler(message: types.Message):
+    """Admin command to configure SlipOK verification mode for a specific group."""
+    has_perm = await check_admin_permission(message.from_user.id, "groups")
+    if not has_perm:
+        await message.reply("❌ คุณไม่มีสิทธิ์เข้าถึงคำสั่งนี้")
+        return
+
+    is_chat_group = message.chat.type in ["group", "supergroup"]
+    args = message.text.split()
+    
+    group_id = None
+    mode = None
+    
+    if is_chat_group:
+        group_id = message.chat.id
+        if len(args) < 2:
+            await message.reply(
+                "💡 **วิธีใช้งาน (พิมพ์ในห้องกลุ่มแชท):**\n"
+                "• `/setmode <smart|always|off>` : เลือกโหมดตรวจสลิปเฉพาะกลุ่มนี้\n"
+                "• `/setmode default` : รีเซ็ตเป็นค่าเริ่มต้นระบบ"
+            )
+            return
+        mode = args[1].lower()
+    else:
+        if len(args) < 3:
+            await message.reply(
+                "💡 **วิธีใช้งาน (พิมพ์ในแชทบอทส่วนตัว):**\n"
+                "• `/setmode <group_id> <smart|always|off>`\n"
+                "• `/setmode <group_id> default`"
+            )
+            return
+        try:
+            group_id = int(args[1])
+        except ValueError:
+            await message.reply("❌ รูปแบบ Group ID ไม่ถูกต้อง กรุณากรอกเป็นตัวเลขเชิงลบ")
+            return
+        mode = args[2].lower()
+
+    if mode not in ["smart", "always", "off", "default"]:
+        await message.reply("❌ โหมดไม่ถูกต้อง กรุณาระบุ: `smart`, `always`, `off` หรือ `default`")
+        return
+
+    g_config = await get_group_config(group_id)
+    if not g_config:
+        await message.reply(f"❌ ไม่พบกลุ่ม ID `{group_id}` ในระบบ หรือกลุ่มนี้ยังไม่ได้รับการอนุญาต")
+        return
+
+    success = await update_group_config(group_id, slipok_mode=mode)
+    if success:
+        display_mode = f"`{mode.upper()}`" if mode != "default" else "ค่าเริ่มต้นส่วนกลาง (Global Fallback)"
+        await message.reply(
+            f"✅ **อัปเดตโหมด SlipOK เฉพาะกลุ่มสำเร็จ!**\n"
+            f"• กลุ่ม: **{g_config.get('group_name')}** (ID: `{group_id}`)\n"
+            f"• โหมดการประมวลผล: {display_mode}"
+        )
+    else:
+        await message.reply("❌ เกิดข้อผิดพลาดในการบันทึกข้อมูลลงฐานข้อมูล")
+
+
+@router.message(Command("setaccount"))
+async def set_group_account_handler(message: types.Message):
+    """Admin command to configure allowed accounts for a specific group."""
+    has_perm = await check_admin_permission(message.from_user.id, "groups")
+    if not has_perm:
+        await message.reply("❌ คุณไม่มีสิทธิ์เข้าถึงคำสั่งนี้")
+        return
+
+    is_chat_group = message.chat.type in ["group", "supergroup"]
+    args = message.text.split(maxsplit=2)
+    
+    group_id = None
+    accounts = None
+    
+    if is_chat_group:
+        group_id = message.chat.id
+        if len(args) < 2:
+            await message.reply(
+                "💡 **วิธีใช้งาน (พิมพ์ในห้องกลุ่มแชท):**\n"
+                "• `/setaccount <เลขบัญชี1 | เลขบัญชี2>` : กำหนดบัญชีรับโอนเฉพาะกลุ่มนี้\n"
+                "• `/setaccount default` : รีเซ็ตเป็นค่าเริ่มต้นระบบ"
+            )
+            return
+        accounts = message.text.split(maxsplit=1)[1].strip()
+    else:
+        if len(args) < 3:
+            await message.reply(
+                "💡 **วิธีใช้งาน (พิมพ์ในแชทบอทส่วนตัว):**\n"
+                "• `/setaccount <group_id> <เลขบัญชี1 | เลขบัญชี2>`\n"
+                "• `/setaccount <group_id> default`"
+            )
+            return
+        try:
+            group_id = int(args[1])
+        except ValueError:
+            await message.reply("❌ รูปแบบ Group ID ไม่ถูกต้อง กรุณากรอกเป็นตัวเลขเชิงลบ")
+            return
+        accounts = args[2].strip()
+
+    g_config = await get_group_config(group_id)
+    if not g_config:
+        await message.reply(f"❌ ไม่พบกลุ่ม ID `{group_id}` ในระบบ หรือกลุ่มนี้ยังไม่ได้รับการอนุญาต")
+        return
+
+    success = await update_group_config(group_id, allowed_accounts=accounts)
+    if success:
+        display_accs = f"`{accounts}`" if accounts.lower() != "default" else "ค่าเริ่มต้นส่วนกลาง (Global Fallback)"
+        await message.reply(
+            f"✅ **อัปเดตเลขบัญชีผู้รับโอนเฉพาะกลุ่มสำเร็จ!**\n"
+            f"• กลุ่ม: **{g_config.get('group_name')}** (ID: `{group_id}`)\n"
+            f"• รายชื่อบัญชีที่ยอมรับ: {display_accs}"
+        )
+    else:
+        await message.reply("❌ เกิดข้อผิดพลาดในการบันทึกข้อมูลลงฐานข้อมูล")
 
 
 @router.message(Command("maintenance"))

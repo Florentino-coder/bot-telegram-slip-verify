@@ -11,7 +11,7 @@ from database.supabase_db import (
     get_slipok_config, get_merchant_names, get_allowed_accounts,
     get_slipok_credentials, update_slipok_credential_status,
     log_slip_log, check_duplicate_image_hash, check_admin_permission,
-    count_sender_today, get_slip_log
+    count_sender_today, get_slip_log, get_group_config
 )
 from services.qr_decoder import decode_qr_from_bytes
 from services.vision_ai import extract_slip_details
@@ -285,11 +285,12 @@ async def process_slip_image(message: types.Message, bot: Bot):
         return
 
     is_group = message.chat.type in ["group", "supergroup"]
+    group_config = None
     
     # Check access permission
     if is_group:
-        allowed = await is_group_allowed(message.chat.id)
-        if not allowed:
+        group_config = await get_group_config(message.chat.id)
+        if not group_config:
             await message.reply("⚠️ หากต้องการใช้งานระบบ Slip Verify ติดต่อ Florentino")
             try:
                 await bot.leave_chat(message.chat.id)
@@ -362,11 +363,39 @@ async def process_slip_image(message: types.Message, bot: Bot):
         await log_slip_log(log_data)
 
     try:
-        # 1. Fetch configurations from database (merchant_names, allowed_accounts, slipok_config, and slipok_credentials)
-        merchant_names = await get_merchant_names()
-        allowed_accounts = await get_allowed_accounts()
+        # 1. Fetch configurations from database with Group overrides
         slipok_config = await get_slipok_config()
         slipok_credentials = await get_slipok_credentials()
+        
+        # Override settings if group_config exists
+        merchant_names = []
+        allowed_accounts = []
+        slipok_mode = slipok_config.get("mode", "off")
+        
+        if group_config:
+            # 1.1 Merchant Name Override
+            g_merchant = group_config.get("merchant_name")
+            if g_merchant:
+                sep = "|" if "|" in g_merchant else ","
+                merchant_names = [n.strip() for n in g_merchant.split(sep) if n.strip()]
+            else:
+                merchant_names = await get_merchant_names()
+                
+            # 1.2 Allowed Accounts Override
+            g_accounts = group_config.get("allowed_accounts")
+            if g_accounts:
+                sep = "|" if "|" in g_accounts else ","
+                allowed_accounts = [a.strip() for a in g_accounts.split(sep) if a.strip()]
+            else:
+                allowed_accounts = await get_allowed_accounts()
+                
+            # 1.3 SlipOK Mode Override
+            g_mode = group_config.get("slipok_mode")
+            if g_mode and g_mode in ["smart", "always", "off"]:
+                slipok_mode = g_mode
+        else:
+            merchant_names = await get_merchant_names()
+            allowed_accounts = await get_allowed_accounts()
         
         # 2. Download photo from Telegram to memory
         photo_file = io.BytesIO()
@@ -472,7 +501,6 @@ async def process_slip_image(message: types.Message, bot: Bot):
 
         # 5. Routing to SlipOK (Smart/Always/Off)
         use_slipok = False
-        slipok_mode = slipok_config.get("mode", "off")
         
         # Filter for active credentials in database
         active_credentials = [c for c in slipok_credentials if c.get("status") == "active"]
