@@ -797,8 +797,23 @@ def _db_get_group_config(group_id: int) -> dict | None:
             return response.data[0]
         return None
     except Exception as e:
-        logger.error(f"Error getting group config for {group_id}: {e}")
-        return None
+        logger.warning(f"Error getting extended group config for {group_id}, trying fallback to core columns: {e}")
+        try:
+            # Fallback to core columns
+            response = _supabase_client.table("allowed_groups")\
+                .select("group_id, group_name, merchant_name, slipok_mode, allowed_accounts")\
+                .eq("group_id", group_id)\
+                .execute()
+            if response.data:
+                data = response.data[0]
+                # Populate default None for compatibility
+                for key in ["min_limit", "max_limit", "slipok_min_amount"]:
+                    data[key] = None
+                return data
+            return None
+        except Exception as fallback_err:
+            logger.error(f"Fallback query failed for group config {group_id}: {fallback_err}")
+            return None
 
 
 def _db_update_group_config(group_id: int, updates: dict) -> bool:
