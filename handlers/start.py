@@ -38,42 +38,111 @@ async def start_handler(message: types.Message):
 
 @router.message(Command("help"))
 async def help_handler(message: types.Message):
-    # Check if user is an admin to show admin commands manual
-    is_admin = await check_admin_permission(message.from_user.id)
+    user_id = message.from_user.id
     
-    if is_admin:
-        help_text = (
-            "ℹ️ **คู่มือคำสั่งผู้ดูแลระบบ (Admin Command Manual):**\n\n"
-            "🔑 **การจัดการสิทธิ์แอดมิน (Super Admin Only):**\n"
-            "• `/admin list` : แสดงรายชื่อแอดมินทั้งหมด\n"
-            "• `/admin add <user_id> <permissions> [username]` : แต่งตั้งแอดมินรอง\n"
-            "• `/admin remove <user_id>` : ยกเลิกสิทธิ์แอดมินรอง\n\n"
-            "🏦 **คำสั่งตรวจสอบและสถิติ:**\n"
-            "• `/stats` : ดูสถิติและผลประเมินยอดรวมของระบบ\n"
-            "• `/slipinfo <slip_id>` : ค้นหารายละเอียดการตรวจสลิปเชิงลึก\n"
-            "• `/myid` หรือ `/id` : ตรวจสอบ User ID ของคุณ\n"
-            "• `/groupid` : ตรวจสอบ ID ของแชทกลุ่มปัจจุบัน\n\n"
-            "👥 **การจัดการกลุ่มแชททั่วไป:**\n"
-            "• `/allowgroup` : อนุญาตการใช้งานบอทในกลุ่มปัจจุบัน (พิมพ์ในกลุ่ม)\n"
-            "• `/disallowgroup <group_id>` : ยกเลิกสิทธิ์กลุ่ม\n"
-            "• `/groups` : แสดงรายชื่อกลุ่มแชทและการตั้งค่าทั้งหมด\n"
-            "• `/groupinfo` : แสดงการตั้งค่าเฉพาะของกลุ่มนี้เท่านั้น (พิมพ์ในกลุ่ม)\n\n"
-            "📢 **คำสั่งตั้งค่ารายกลุ่มแชท (Group Overrides):**\n"
-            "• `/setmerchant <ชื่อ>` : ตั้งร้านผู้รับโอนเฉพาะกลุ่มนี้ใหม่ทั้งหมด\n"
-            "• `/addmerchant <ชื่อ>` : เพิ่มร้านค้าต่อท้ายชื่อเดิมเฉพาะกลุ่มนี้\n"
-            "• `/delmerchant <ชื่อ>` : ลบเฉพาะชื่อร้านนี้ออกจากกลุ่มนี้\n"
-            "• `/setaccount <เลข>` : ตั้งเลขบัญชีเฉพาะกลุ่มนี้ใหม่ทั้งหมด\n"
-            "• `/addaccount <เลข>` : เพิ่มเลขบัญชีต่อท้ายบัญชีเดิมเฉพาะกลุ่มนี้\n"
-            "• `/delaccount <เลข>` : ลบเฉพาะเลขบัญชีนี้ออกจากกลุ่มนี้\n"
-            "• `/setmode <smart/always/off>` : ตั้งโหมด SlipOK เฉพาะกลุ่มนี้\n\n"
-            "⚙️ **การตั้งค่าบอทหลัก (Global Config):**\n"
-            "• `/maintenance <on/off>` : เปิด/ปิดระบบปิดปรับปรุงบอท\n"
-            "• `/limit <min> <max>` : กำหนดช่วงยอดเงินปกติในการโอน\n"
-            "• `/merchant` : ดู/เพิ่ม/ลบชื่อร้านผู้รับโอนเริ่มต้นระบบ\n"
-            "• `/account` : ดู/เพิ่ม/ลบเลขบัญชีผู้รับโอนเริ่มต้นระบบ\n"
-            "• `/slipok` : ดู/ตั้งค่า/เปิดปิด API SlipOK เริ่มต้นระบบ"
-        )
+    # 1. Determine permissions
+    is_super = user_id in Config.ADMIN_USER_IDS
+    
+    has_stats = is_super or await check_admin_permission(user_id, "stats")
+    has_slipinfo = is_super or await check_admin_permission(user_id, "slipinfo")
+    has_groups = is_super or await check_admin_permission(user_id, "groups")
+    has_maint = is_super or await check_admin_permission(user_id, "maintenance")
+    has_limit = is_super or await check_admin_permission(user_id, "limit")
+    has_merchant = is_super or await check_admin_permission(user_id, "merchant")
+    has_account = is_super or await check_admin_permission(user_id, "account")
+    
+    is_any_admin = is_super or has_stats or has_slipinfo or has_groups or has_maint or has_limit or has_merchant or has_account
+
+    if is_any_admin:
+        help_sections = []
+        help_sections.append("ℹ️ **คู่มือคำสั่งผู้ดูแลระบบ (Admin Command Manual):**\n")
+        
+        # Super Admin Only section
+        if is_super:
+            help_sections.append(
+                "🔑 **การจัดการสิทธิ์แอดมิน (Super Admin Only):**\n"
+                "• `/admin list` : ดูแอดมินในฐานข้อมูลทั้งหมด\n"
+                "• `/admin add <user_id> <permissions> [username]` : เพิ่มแอดมินรอง (permissions คั่นด้วยลูกน้ำ เช่น `stats,groups`)\n"
+                "• `/admin remove <user_id>` : ลบแอดมินรองออก\n"
+            )
+            
+        # Stats & Audit logs section
+        if has_stats or has_slipinfo:
+            stats_checks = []
+            stats_checks.append("🏦 **คำสั่งตรวจสอบและสถิติ:**")
+            if has_stats:
+                stats_checks.append("• `/stats` : ดูแผงสถิติสรุปภาพรวมและสัดส่วนธุรกรรมทั้งหมดในระบบ")
+            if has_slipinfo:
+                stats_checks.append("• `/slipinfo <slip_id>` : ค้นหารายละเอียด/บันทึกการประมวลผลและการตัดสินใจตรวจสลิปดิบเชิงลึก")
+            stats_checks.append("• `/myid` หรือ `/id` : ตรวจสอบ User ID ของตัวเอง (หรือพิมพ์ตอบกลับข้อความผู้อื่นเพื่อเช็ค ID คนนั้น)")
+            stats_checks.append("• `/groupid` : ตรวจสอบ ID ของกลุ่มแชทปัจจุบัน (พิมพ์ลงในกลุ่ม)")
+            help_sections.append("\n".join(stats_checks) + "\n")
+            
+        # Group Management & Whitelist section
+        if has_groups:
+            help_sections.append(
+                "👥 **การจัดการกลุ่มแชททั่วไป:**\n"
+                "• `/allowgroup` : อนุญาตใช้งานบอทในห้องปัจจุบัน (พิมพ์ในกลุ่มนั้น)\n"
+                "• `/disallowgroup <group_id>` : ยกเลิกสิทธิ์ใช้งานกลุ่ม\n"
+                "• `/groups` : ดูตารางรายชื่อกลุ่มและสรุปการตั้งค่าแยกตามกลุ่มทั้งหมด\n"
+                "• `/groupinfo` : ดูข้อมูลการตั้งค่าเฉพาะของกลุ่มนี้เท่านั้น (พิมพ์ในกลุ่ม)\n"
+            )
+            
+            help_sections.append(
+                "📢 **คำสั่งตั้งค่ารายกลุ่มแชท (Group Overrides):**\n"
+                "• `/setmerchant <ชื่อ1 | ชื่อ2>` : ตั้งร้านผู้รับโอนเฉพาะกลุ่มนี้ใหม่ทั้งหมด (คั่นด้วย `|` หรือ `,`)\n"
+                "• `/addmerchant <ชื่อร้าน>` : เพิ่มชื่อร้านเฉพาะกลุ่มนี้ต่อท้ายข้อมูลเดิม\n"
+                "• `/delmerchant <ชื่อร้าน>` : ลบเฉพาะชื่อร้านนี้ออกจากกลุ่มนี้\n"
+                "• `/setaccount <เลข1 | เลข2>` : ตั้งเลขบัญชีรับโอนเฉพาะกลุ่มนี้ใหม่ทั้งหมด\n"
+                "• `/addaccount <เลขบัญชี>` : เพิ่มเลขบัญชีเฉพาะกลุ่มนี้ต่อท้ายข้อมูลเดิม\n"
+                "• `/delaccount <เลขบัญชี>` : ลบเฉพาะเลขบัญชีนี้ออกจากกลุ่มนี้\n"
+                "• `/setmode <smart | always | off>` : กำหนดโหมดตรวจสลิปเฉพาะกลุ่มนี้\n"
+                "💡 *หมายเหตุ:* ทุกคำสั่งตั้งค่ารายกลุ่มพิมพ์ตามด้วย `default` เพื่อรีเซ็ตกลับเป็นค่าเริ่มต้นระบบ\n"
+            )
+            
+        # Global Config section
+        global_configs = []
+        if has_maint or has_limit or has_merchant or has_account or is_super:
+            global_configs.append("⚙️ **การตั้งค่าบอทหลัก (Global Config):**")
+            if has_maint:
+                global_configs.append(
+                    "• `/maintenance <on/off>` : เปิด/ปิดปิดระบบบอทชั่วคราว\n"
+                    "  └─ `/maintenance on` : ปิดปรับปรุง (คนทั่วไปจะถูกบล็อก แอดมินทดสอบได้ปกติ)\n"
+                    "  └─ `/maintenance off` : เปิดใช้งานปกติ"
+                )
+            if has_limit:
+                global_configs.append(
+                    "• `/limit <min> <max>` : กำหนดขอบเขตยอดเงินปกติในการโอน (THB)\n"
+                    "  └─ `/limit 100 5000` : หากยอดอยู่นอกเหนือช่วงนี้ บอทจะเพิ่มแจ้งเตือนเตือนร้านค้า"
+                )
+            if has_merchant:
+                global_configs.append(
+                    "• `/merchant` : ดู/ตั้งค่าร้านผู้รับโอนเริ่มต้นระบบส่วนกลาง\n"
+                    "  └─ `/merchant add <ชื่อ>` : เพิ่มร้านค้า\n"
+                    "  └─ `/merchant remove <ชื่อ>` : ลบร้านค้า\n"
+                    "  └─ `/merchant clear` : ล้างชื่อร้านทั้งหมดกลับไปดึงจากไฟล์ `.env`"
+                )
+            if has_account:
+                global_configs.append(
+                    "• `/account` : ดู/ตั้งค่าเลขบัญชีผู้รับโอนเริ่มต้นระบบส่วนกลาง\n"
+                    "  └─ `/account add <เลข>` : เพิ่มบัญชี\n"
+                    "  └─ `/account remove <เลข>` : ลบบัญชี\n"
+                    "  └─ `/account clear` : ล้างบัญชีทั้งหมดและปิดโหมดตรวจสอบเลขบัญชีปลายทาง"
+                )
+            if is_super:
+                global_configs.append(
+                    "• `/slipok` : ดูสถานะคีย์ API และตั้งค่าบริการ SlipOK\n"
+                    "  └─ `/slipok mode <smart|always|off>` : สลับโหมดทำงาน\n"
+                    "  └─ `/slipok minamount <ยอด>` : ยอดเงินขั้นต่ำตรวจ API ในโหมด Smart\n"
+                    "  └─ `/slipok addkey <API_KEY> <BRANCH_ID>` : เพิ่มคีย์ใหม่\n"
+                    "  └─ `/slipok removekey <ลำดับ>` : ลบคีย์ลำดับที่ระบุ\n"
+                    "  └─ `/slipok resetkeys` : รีเซ็ตสถานะคีย์ทั้งหมดให้พร้อมใช้งาน"
+                )
+            help_sections.append("\n".join(global_configs))
+            
+        help_text = "\n".join(help_sections)
     else:
+        # Standard customer manual
         help_text = (
             "ℹ️ **วิธีใช้งานระบบตรวจสอบสลิป:**\n\n"
             "1. **ส่งรูปภาพสลิป**: ส่งภาพสลิปธนาคารที่มี QR Code ชัดเจนเข้ามาในแชท\n"
