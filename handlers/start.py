@@ -89,23 +89,41 @@ async def help_handler(message: types.Message):
             )
             
             help_sections.append(
-                "📢 **คำสั่งตั้งค่ารายกลุ่มแชท (Group Overrides):**\n"
+                "📢 **คำสั่งตั้งค่าเฉพาะกลุ่มแชท (Group Overrides):**\n"
+                "_⚠️ พิมพ์คำสั่งเหล่านี้ **ในกลุ่มแชทเป้าหมาย** เท่านั้น — ค่าที่ตั้งจะมีผลเฉพาะกลุ่มนั้น_\n\n"
+                "**🏢 ชื่อร้านผู้รับโอน (Group Merchant):**\n"
                 "• `/setmerchant <ชื่อ1 | ชื่อ2>` : ตั้งร้านผู้รับโอนเฉพาะกลุ่มนี้ใหม่ทั้งหมด (คั่นด้วย `|` หรือ `,`)\n"
-                "• `/addmerchant <ชื่อร้าน>` : เพิ่มชื่อร้านเฉพาะกลุ่มนี้ต่อท้ายข้อมูลเดิม\n"
+                "• `/addmerchant <ชื่อร้าน>` : เพิ่มชื่อร้านต่อท้ายข้อมูลเดิมของกลุ่มนี้\n"
                 "• `/delmerchant <ชื่อร้าน>` : ลบเฉพาะชื่อร้านนี้ออกจากกลุ่มนี้\n"
+                "• `/setmerchant default` : รีเซ็ตกลับไปใช้ค่าส่วนกลาง (Global)\n\n"
+                "**🏦 เลขบัญชีรับโอน (Group Account):**\n"
                 "• `/setaccount <เลข1 | เลข2>` : ตั้งเลขบัญชีรับโอนเฉพาะกลุ่มนี้ใหม่ทั้งหมด\n"
-                "• `/addaccount <เลขบัญชี>` : เพิ่มเลขบัญชีเฉพาะกลุ่มนี้ต่อท้ายข้อมูลเดิม\n"
+                "• `/addaccount <เลขบัญชี>` : เพิ่มเลขบัญชีต่อท้ายข้อมูลเดิมของกลุ่มนี้\n"
                 "• `/delaccount <เลขบัญชี>` : ลบเฉพาะเลขบัญชีนี้ออกจากกลุ่มนี้\n"
-                "• `/setlimit <ยอดต่ำ> <ยอดสูง>` : กำหนดช่วงยอดโอนปกติเฉพาะกลุ่มนี้ (เช่น `/setlimit 100 5000`)\n"
-                "• `/setminamount <ยอดเงิน>` : กำหนดยอดเงินเริ่มเช็คธนาคาร (Smart) เฉพาะกลุ่มนี้ (เช่น `/setminamount 300`)\n"
+                "• `/setaccount default` : รีเซ็ตกลับไปใช้ค่าส่วนกลาง (Global)\n\n"
+                "**💰 ช่วงยอดเงิน & ขั้นต่ำ SlipOK (Group Limits):**\n"
+                "• `/setlimit <ยอดต่ำ> <ยอดสูง>` : กำหนดช่วงยอดโอนปกติเฉพาะกลุ่มนี้\n"
+                "  └─ เช่น `/setlimit 100 5000` → บอทจะแจ้งเตือนหากยอดอยู่นอกช่วง 100–5,000 THB\n"
+                "  └─ `/setlimit default` : รีเซ็ตกลับไปใช้ค่า `/limit` ส่วนกลาง\n"
+                "• `/setminamount <ยอด>` : กำหนดยอดขั้นต่ำสำหรับเรียก API ตรวจสลิป (Smart Mode) เฉพาะกลุ่มนี้\n"
+                "  └─ เช่น `/setminamount 500` → สลิปต่ำกว่า 500 THB จะข้ามการเรียก SlipOK API ในกลุ่มนี้\n"
+                "  └─ `/setminamount default` : รีเซ็ตกลับไปใช้ค่า `/slipok minamount` ส่วนกลาง\n\n"
+                "**🔧 โหมดตรวจสลิป (Group SlipOK Mode):**\n"
                 "• `/setmode <smart | always | off>` : กำหนดโหมดตรวจสลิปเฉพาะกลุ่มนี้\n"
-                "💡 *หมายเหตุ:* ทุกคำสั่งตั้งค่ารายกลุ่มพิมพ์ตามด้วย `default` เพื่อรีเซ็ตกลับเป็นค่าเริ่มต้นระบบ\n"
+                "  └─ `smart` : เช็ค API เฉพาะสลิปที่ยอดถึงขั้นต่ำ `/setminamount`\n"
+                "  └─ `always` : เช็ค API ทุกสลิปโดยไม่สนใจยอดเงิน\n"
+                "  └─ `off` : ปิดใช้ SlipOK API เฉพาะกลุ่มนี้ (ตรวจแค่ QR ปกติ)\n"
+                "  └─ `/setmode default` : รีเซ็ตกลับไปใช้โหมดส่วนกลาง\n"
+                "• `/groupinfo` : ดูสรุปการตั้งค่าทั้งหมดของกลุ่มนี้\n"
             )
             
         # Global Config section
         global_configs = []
         if has_maint or has_limit or has_merchant or has_account or is_super:
-            global_configs.append("⚙️ **การตั้งค่าบอทหลัก (Global Config):**")
+            global_configs.append(
+                "⚙️ **การตั้งค่าบอทหลัก (Global Config):**\n"
+                "_ค่าเหล่านี้เป็น \"ค่าเริ่มต้น\" ที่กลุ่มแชทจะใช้ หากยังไม่ได้ตั้งค่า Override ไว้_"
+            )
             if has_maint:
                 global_configs.append(
                     "• `/maintenance <on/off>` : เปิด/ปิดปิดระบบบอทชั่วคราว\n"
@@ -114,8 +132,10 @@ async def help_handler(message: types.Message):
                 )
             if has_limit:
                 global_configs.append(
-                    "• `/limit <min> <max>` : กำหนดขอบเขตยอดเงินปกติในการโอน (THB)\n"
-                    "  └─ `/limit 100 5000` : หากยอดอยู่นอกเหนือช่วงนี้ บอทจะเพิ่มแจ้งเตือนเตือนร้านค้า"
+                    "• `/limit <min> <max>` : กำหนดช่วงยอดเงินปกติ **ส่วนกลาง** (ใช้กับทุกกลุ่มที่ไม่มี Override)\n"
+                    "  └─ เช่น `/limit 100 5000` → แจ้งเตือนร้านค้าถ้ายอดอยู่นอกช่วง 100–5,000 THB\n"
+                    "  └─ `/limit` (ไม่ใส่ค่า) : ดูค่าปัจจุบัน\n"
+                    "  ⚠️ *หากต้องการตั้งเฉพาะกลุ่ม ใช้ `/setlimit` ในกลุ่มนั้นแทน*"
                 )
             if has_merchant:
                 global_configs.append(
@@ -133,9 +153,10 @@ async def help_handler(message: types.Message):
                 )
             if is_super:
                 global_configs.append(
-                    "• `/slipok` : ดูสถานะคีย์ API และตั้งค่าบริการ SlipOK\n"
-                    "  └─ `/slipok mode <smart|always|off>` : สลับโหมดทำงาน\n"
-                    "  └─ `/slipok minamount <ยอด>` : ยอดเงินขั้นต่ำตรวจ API ในโหมด Smart\n"
+                    "• `/slipok` : ดูสถานะคีย์ API และตั้งค่าบริการ SlipOK **ส่วนกลาง**\n"
+                    "  └─ `/slipok mode <smart|always|off>` : สลับโหมดทำงานส่วนกลาง\n"
+                    "  └─ `/slipok minamount <ยอด>` : ยอดขั้นต่ำเรียก API ในโหมด Smart **ส่วนกลาง**\n"
+                    "       ⚠️ *หากต้องการตั้งเฉพาะกลุ่ม ใช้ `/setminamount` ในกลุ่มนั้นแทน*\n"
                     "  └─ `/slipok addkey <API_KEY> <BRANCH_ID>` : เพิ่มคีย์ใหม่\n"
                     "  └─ `/slipok removekey <ลำดับ>` : ลบคีย์ลำดับที่ระบุ\n"
                     "  └─ `/slipok resetkeys` : รีเซ็ตสถานะคีย์ทั้งหมดให้พร้อมใช้งาน"
