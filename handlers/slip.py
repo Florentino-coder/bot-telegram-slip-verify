@@ -31,6 +31,87 @@ def _failure_detail_keyboard(slip_id: str) -> InlineKeyboardMarkup:
     ])
 
 
+def _failure_key_fields(slip_log: dict) -> dict:
+    """Pull out only the human-relevant fields from a failed/errored slip log."""
+    ocr_res = slip_log.get("ocr_result") or {}
+    slipok_res = slip_log.get("slipok_result") or {}
+    risk_res = slip_log.get("risk_result") or {}
+    qr_res = slip_log.get("qr_result") or {}
+    slipok_data = (slipok_res.get("raw") or {}).get("data") or {}
+
+    sender_name = (
+        (slipok_data.get("sender") or {}).get("displayName")
+        or ocr_res.get("sender_name")
+        or slipok_res.get("sender_name")
+        or (slipok_data.get("sender") or {}).get("name")
+        or "ไม่ระบุ"
+    )
+    receiver_name = (
+        (slipok_data.get("receiver") or {}).get("displayName")
+        or ocr_res.get("receiver_name")
+        or slipok_res.get("receiver_name")
+        or (slipok_data.get("receiver") or {}).get("name")
+        or "ไม่ระบุ"
+    )
+    amount = slip_log.get("amount") or slipok_data.get("amount") or 0.0
+    trans_date = ocr_res.get("trans_date") or slipok_res.get("trans_date") or slipok_data.get("transDate")
+    sending_bank_code = qr_res.get("sending_bank") or slipok_res.get("sending_bank") or slipok_data.get("sendingBank")
+
+    reason = slip_log.get("failure_reason") or slipok_res.get("message") or (slipok_res.get("raw") or {}).get("message") or "ไม่ระบุ"
+    error_code = slip_log.get("error_code") or slipok_res.get("error_code") or "ไม่ระบุ"
+    http_status = slipok_res.get("http_status") or "ไม่ระบุ"
+    provider = risk_res.get("provider_used") or slip_log.get("provider_used") or "ไม่ระบุ"
+
+    return {
+        "sender_name": sender_name,
+        "receiver_name": receiver_name,
+        "amount": amount,
+        "trans_date": trans_date,
+        "bank_name": get_bank_name(sending_bank_code),
+        "reason": reason,
+        "error_code": error_code,
+        "http_status": http_status,
+        "provider": provider,
+        "status": slip_log.get("status") or "ไม่ทราบ",
+    }
+
+
+def _build_failure_summary_text(slip_id: str, slip_log: dict) -> str:
+    """Short failure card, mirroring the style used for a passed slip's summary."""
+    f = _failure_key_fields(slip_log)
+    status_label = "❌ ผิดพลาดภายในระบบ" if f["status"] == "ERROR" else "🔴 สลิปไม่ผ่านการตรวจสอบ!"
+    return (
+        f"{status_label}\n\n"
+        f"👤 **ผู้โอน**: `{mask_name(f['sender_name'])}`\n"
+        f"🏢 **ผู้รับ**: `{f['receiver_name']}`\n"
+        f"💵 **ยอดเงิน**: `{f['amount']:,.2f} THB`\n"
+        f"🏦 **ธนาคาร**: `{f['bank_name']}`\n\n"
+        f"**สาเหตุ:** {f['reason']}\n"
+        f"**รหัสข้อผิดพลาด:** `{f['error_code']}`\n\n"
+        f"กรุณาส่งรูปภาพสลิปที่ถูกต้อง หรือติดต่อเจ้าหน้าที่หากมีข้อสงสัย"
+    )
+
+
+def _build_failure_detail_text(slip_id: str, slip_log: dict) -> str:
+    """Full-but-concise failure card: only the key fields, no raw JSON dump."""
+    f = _failure_key_fields(slip_log)
+    be_date_str = format_to_be_datetime(f["trans_date"]) if f["trans_date"] else "ไม่ระบุ"
+    return (
+        f"📋 **รายละเอียดข้อมูลสลิปแบบเต็ม**\n"
+        f"🆔 `Slip ID: {slip_id}`\n\n"
+        f"🏦 **ธนาคาร**: `{f['bank_name']}`\n"
+        f"👤 **ผู้โอน**: `{f['sender_name']}`\n"
+        f"🏢 **ผู้รับ**: `{f['receiver_name']}`\n"
+        f"💵 **ยอดเงิน**: `{f['amount']:,.2f} THB`\n"
+        f"📅 **วันเวลาโอน**: `{be_date_str}`\n\n"
+        f"🔎 **สถานะ**: `{f['status']}`\n"
+        f"**สาเหตุ:** {f['reason']}\n"
+        f"**รหัสข้อผิดพลาด:** `{f['error_code']}`\n"
+        f"**HTTP status:** `{f['http_status']}`\n"
+        f"**Provider:** `{f['provider']}`\n"
+    )
+
+
 def _json_for_telegram(value, limit: int = 3500) -> str:
     """Serialize provider data without Markdown parsing or crashing on odd values."""
     try:
@@ -978,29 +1059,15 @@ async def process_detail_callback(callback_query: CallbackQuery):
         await callback_query.answer("❌ ไม่พบข้อมูลสลิปนี้ในระบบ", show_alert=True)
         return
 
-    # Failed/error checks need provider diagnostics, not the normal success summary.
+    # Failed/error checks show a concise diagnostic card (same style as a passed slip),
+    # with a button to collapse back to the short summary.
     if slip_log.get("status") != "PASS":
-        slipok_res = slip_log.get("slipok_result") or {}
-        risk_res = slip_log.get("risk_result") or {}
-        diag_payload = {
-            "slipok": slipok_res,
-            "qr": slip_log.get("qr_result"),
-            "ocr": slip_log.get("ocr_result"),
-            "risk": risk_res,
-        }
-        failure_text = (
-            "📋 รายละเอียดการตรวจสอบสลิป\n"
-            f"Slip ID: {slip_id}\n"
-            f"สถานะ: {slip_log.get('status') or 'ไม่ทราบ'}\n"
-            f"เหตุผล: {slip_log.get('failure_reason') or slipok_res.get('message') or 'ไม่ระบุ'}\n"
-            f"รหัสข้อผิดพลาด: {slip_log.get('error_code') or slipok_res.get('error_code') or 'ไม่ระบุ'}\n"
-            f"HTTP status: {slipok_res.get('http_status') or 'ไม่ระบุ'}\n"
-            f"Provider: {risk_res.get('provider_used', 'ไม่ระบุ')}\n\n"
-            "ข้อมูลจาก SlipOK / ระบบ:\n"
-            f"{_json_for_telegram(diag_payload)}"
-        )
+        failure_text = _build_failure_detail_text(slip_id, slip_log)
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="↩️ ย่อข้อความ", callback_data=f"summary:{slip_id}")]
+        ])
         try:
-            await callback_query.message.edit_text(failure_text, parse_mode=None)
+            await callback_query.message.edit_text(failure_text, parse_mode="Markdown", reply_markup=keyboard)
         except Exception as exc:
             logger.error(f"Failed to edit failure detail message: {exc}")
         await callback_query.answer()
@@ -1089,7 +1156,20 @@ async def process_summary_callback(callback_query: CallbackQuery):
     if not slip_log:
         await callback_query.answer("❌ ไม่พบข้อมูลสลิปนี้ในระบบ", show_alert=True)
         return
-        
+
+    # Failed/errored checks collapse to the short failure card, not the success layout.
+    if slip_log.get("status") != "PASS":
+        summary_text = _build_failure_summary_text(slip_id, slip_log)
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📋 ดูรายละเอียดทั้งหมด", callback_data=f"detail:{slip_id}")]
+        ])
+        try:
+            await callback_query.message.edit_text(summary_text, parse_mode="Markdown", reply_markup=keyboard)
+        except Exception as exc:
+            logger.error(f"Failed to edit failure summary message: {exc}")
+        await callback_query.answer()
+        return
+
     ocr_res = slip_log.get("ocr_result") or {}
     slipok_res = slip_log.get("slipok_result") or {}
     qr_res = slip_log.get("qr_result") or {}
