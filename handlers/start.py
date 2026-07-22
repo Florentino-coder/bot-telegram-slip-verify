@@ -184,7 +184,22 @@ async def help_handler(message: types.Message):
         )
         
     try:
-        await message.reply(help_text, parse_mode="Markdown")
+        # Split message into chunks if it exceeds Telegram limit (max 4096, using 3800 for safety)
+        MAX_LEN = 3800
+        if len(help_text) > MAX_LEN:
+            # Send section by section or chunked
+            current_chunk = ""
+            for section in help_sections:
+                if len(current_chunk) + len(section) + 2 > MAX_LEN:
+                    if current_chunk.strip():
+                        await message.reply(current_chunk.strip(), parse_mode="Markdown")
+                    current_chunk = section + "\n"
+                else:
+                    current_chunk += section + "\n"
+            if current_chunk.strip():
+                await message.reply(current_chunk.strip(), parse_mode="Markdown")
+        else:
+            await message.reply(help_text, parse_mode="Markdown")
     except Exception as e:
         logger.error(f"Error sending help message to user {message.from_user.id}: {e}")
 
