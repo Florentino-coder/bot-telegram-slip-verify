@@ -17,7 +17,7 @@ from services.qr_decoder import decode_qr_from_bytes
 from services.vision_ai import extract_slip_details
 from services.risk_engine import assess_slip_risk, match_merchant_name
 from services.bank_codes import get_bank_name
-from services.slipok import verify_slip_via_slipok
+from services.slipok import verify_slip_via_slipok, check_slipok_quota
 
 logger = logging.getLogger("SlipBot.Handlers.Slip")
 router = Router()
@@ -557,7 +557,36 @@ async def process_slip_image(message: types.Message, bot: Bot):
             for cred in active_credentials:
                 current_key = cred.get("api_key")
                 current_branch = cred.get("branch_id")
-                
+
+                # --- Proactive Quota Check ---
+                # ตรวจสอบ quota ที่เหลือก่อนส่งคำขอจริง
+                # เพื่อป้องกันการเสียเงินเมื่อ free quota หมด (สลิปที่ 101)
+                try:
+                    quota_data = await check_slipok_quota(current_key, current_branch)
+                    if quota_data is not None:
+                        remaining = quota_data.get("remaining", quota_data.get("quota", 999))
+                        logger.info(f"SlipOK quota check for key {current_key[:10]}...: remaining={remaining}")
+                        if remaining is not None and int(remaining) <= 0:
+                            logger.warning(f"SlipOK key {current_key[:10]}... has 0 remaining quota. Rotating preemptively.")
+                            await update_slipok_credential_status(current_key, "exhausted")
+                            censored_key = f"{current_key[:6]}...{current_key[-4:]}" if len(current_key) > 10 else current_key
+                            alert_msg = (
+                                f"⚠️ **แจ้งเตือน SlipOK API Key โควต้าหมด!**\n\n"
+                                f"• Key: `{censored_key}` (Branch: `{current_branch}`)\n"
+                                f"• สาเหตุ: `โควต้าหมด (Proactive Check - Remaining: 0)`\n"
+                                f"• ระบบกำลังสลับใช้ API Key ลำดับถัดไปโดยอัตโนมัติ..."
+                            )
+                            for admin_id in Config.ADMIN_USER_IDS:
+                                try:
+                                    await bot.send_message(chat_id=admin_id, text=alert_msg, parse_mode="Markdown")
+                                except Exception as e:
+                                    logger.error(f"Failed to alert admin {admin_id}: {e}")
+                            verify_res = None
+                            continue
+                except Exception as quota_err:
+                    logger.warning(f"Proactive quota check failed for key {current_key[:10]}...: {quota_err}. Proceeding with verification.")
+                # --- End Proactive Quota Check ---
+
                 logger.info(f"Attempting SlipOK verification using key: {current_key[:10]}... (Branch: {current_branch})")
                 verify_res = await verify_slip_via_slipok(
                     api_key=current_key,
