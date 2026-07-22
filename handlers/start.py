@@ -113,7 +113,12 @@ async def help_handler(message: types.Message):
                 "  └─ `smart` : เช็ค API เฉพาะสลิปที่ยอดถึงขั้นต่ำ `/setminamount`\n"
                 "  └─ `always` : เช็ค API ทุกสลิปโดยไม่สนใจยอดเงิน\n"
                 "  └─ `off` : ปิดใช้ SlipOK API เฉพาะกลุ่มนี้ (ตรวจแค่ QR ปกติ)\n"
-                "  └─ `/setmode default` : รีเซ็ตกลับไปใช้โหมดส่วนกลาง\n"
+                "  └─ `/setmode default` : รีเซ็ตกลับไปใช้โหมดส่วนกลาง\n\n"
+                "**🔑 SlipOK API Keys เฉพาะกลุ่ม:**\n"
+                "• `/groupslipokkeys <group_id> <branch_id1,branch_id2>` : กำหนด SlipOK key ที่กลุ่มนี้ใช้\n"
+                "  └─ เช่น `/groupslipokkeys -100123 branch_a1,branch_a2`\n"
+                "  └─ `/groupslipokkeys <group_id> default` : รีเซ็ตกลับใช้ Global keys ทั้งหมด\n"
+                "  └─ `/groupslipokkeys <group_id>` : ดูค่าปัจจุบันของกลุ่มนั้น\n"
                 "• `/groupinfo` : ดูสรุปการตั้งค่าทั้งหมดของกลุ่มนี้\n"
             )
             
@@ -1175,6 +1180,9 @@ async def groupinfo_handler(message: types.Message):
     g_slipok_min = g_config.get("slipok_min_amount")
     g_slipok_min_str = f"`{g_slipok_min:,.2f} THB`" if g_slipok_min is not None else "ใช้ค่าเริ่มต้นของระบบ (Global Fallback)"
 
+    g_slipok_keys = g_config.get("slipok_keys")
+    g_slipok_keys_str = f"`{g_slipok_keys}`" if g_slipok_keys else "ใช้ Global Keys ทั้งหมด (ไม่ได้กำหนดเฉพาะ)"
+
     info_text = (
         f"👥 **ข้อมูลและการตั้งค่ากลุ่มนี้:**\n\n"
         f"• **ชื่อกลุ่ม**: **{g_name}**\n"
@@ -1183,7 +1191,8 @@ async def groupinfo_handler(message: types.Message):
         f"• **เลขบัญชีรับโอน**: `{g_accounts}`\n"
         f"• **ช่วงยอดเงินปกติ**: {g_limit_str}\n"
         f"• **ขั้นต่ำตรวจ SlipOK (Smart)**: {g_slipok_min_str}\n"
-        f"• **โหมดตรวจสอบ**: `{g_mode.upper() if g_mode != 'ใช้ค่าเริ่มต้นของระบบ (Global Fallback)' else g_mode}`"
+        f"• **โหมดตรวจสอบ**: `{g_mode.upper() if g_mode != 'ใช้ค่าเริ่มต้นของระบบ (Global Fallback)' else g_mode}`\n"
+        f"• **SlipOK Keys ที่ใช้**: {g_slipok_keys_str}"
     )
     await message.reply(info_text, parse_mode="Markdown")
 
@@ -1612,3 +1621,115 @@ async def set_group_min_amount_handler(message: types.Message):
         await message.reply("❌ เกิดข้อผิดพลาดในการบันทึกข้อมูล")
 
 
+@router.message(Command("groupslipokkeys"))
+async def group_slipok_keys_handler(message: types.Message):
+    """
+    Admin command to assign specific SlipOK branch IDs to a group.
+    Usage (DM only):
+      /groupslipokkeys <group_id>                        — view current assigned keys
+      /groupslipokkeys <group_id> <branch1,branch2,...>  — assign specific keys
+      /groupslipokkeys <group_id> default                — reset to global keys
+    """
+    is_super = message.from_user.id in Config.ADMIN_USER_IDS
+    has_perm = is_super or await check_admin_permission(message.from_user.id, "groups")
+    if not has_perm:
+        await message.reply("❌ คุณไม่มีสิทธิ์เข้าถึงคำสั่งนี้")
+        return
+
+    # DM only
+    if message.chat.type != "private":
+        await message.reply("⚠️ คำสั่งนี้ใช้ได้เฉพาะในแชทส่วนตัวกับบอทเท่านั้น")
+        return
+
+    args = message.text.split(maxsplit=2)
+    if len(args) < 2:
+        await message.reply(
+            "🔑 **จัดการ SlipOK Keys เฉพาะกลุ่ม**\n\n"
+            "**วิธีใช้งาน:**\n"
+            "• `/groupslipokkeys <group_id>` — ดู keys ที่กำหนดไว้ปัจจุบัน\n"
+            "• `/groupslipokkeys <group_id> <branch_id1,branch_id2>` — กำหนด keys เฉพาะ\n"
+            "• `/groupslipokkeys <group_id> default` — รีเซ็ตกลับใช้ Global keys ทั้งหมด\n\n"
+            "**ตัวอย่าง:**\n"
+            "`/groupslipokkeys -1001234567890 branch_shopA`\n"
+            "`/groupslipokkeys -1001234567890 branch_shopA,branch_shopA2`\n"
+            "`/groupslipokkeys -1001234567890 default`",
+            parse_mode="Markdown"
+        )
+        return
+
+    try:
+        group_id = int(args[1])
+    except ValueError:
+        await message.reply("❌ รูปแบบ Group ID ไม่ถูกต้อง (ต้องเป็นตัวเลข เช่น `-1001234567890`)")
+        return
+
+    g_config = await get_group_config(group_id)
+    if not g_config:
+        await message.reply(f"❌ ไม่พบกลุ่ม ID `{group_id}` ในระบบ")
+        return
+
+    g_name = g_config.get("group_name") or str(group_id)
+
+    # View mode — no extra args
+    if len(args) < 3:
+        current_keys = g_config.get("slipok_keys")
+        if current_keys:
+            display = f"`{current_keys}`"
+        else:
+            display = "ใช้ Global Keys ทั้งหมด (ไม่ได้กำหนดเฉพาะ)"
+        await message.reply(
+            f"🔑 **SlipOK Keys ของกลุ่ม {g_name}**\n\n"
+            f"• **Group ID**: `{group_id}`\n"
+            f"• **Keys ที่ assign**: {display}\n\n"
+            f"💡 ใช้ `/groupslipokkeys {group_id} <branch_ids>` เพื่อเปลี่ยน",
+            parse_mode="Markdown"
+        )
+        return
+
+    # Set / Reset
+    new_keys_raw = args[2].strip()
+
+    if new_keys_raw.lower() == "default":
+        success = await update_group_config(group_id, slipok_keys="default")
+        if success:
+            await message.reply(
+                f"✅ **รีเซ็ต SlipOK Keys ของกลุ่มสำเร็จ!**\n\n"
+                f"• **กลุ่ม**: {g_name}\n"
+                f"• **SlipOK Keys**: ใช้ Global Keys ทั้งหมด (ค่า default)",
+                parse_mode="Markdown"
+            )
+        else:
+            await message.reply("❌ เกิดข้อผิดพลาดในการบันทึกข้อมูล")
+        return
+
+    # Validate & normalize branch_ids
+    branch_ids = [b.strip() for b in new_keys_raw.replace(" ", "").split(",") if b.strip()]
+    if not branch_ids:
+        await message.reply("❌ ไม่พบ Branch ID ที่ถูกต้อง กรุณาตรวจสอบรูปแบบ")
+        return
+
+    # Cross-check against registered credentials
+    all_creds = await get_slipok_credentials()
+    registered_branches = {c.get("branch_id") for c in all_creds}
+    unregistered = [b for b in branch_ids if b not in registered_branches]
+    if unregistered:
+        await message.reply(
+            f"⚠️ **Branch IDs ต่อไปนี้ไม่มีในระบบ SlipOK:**\n"
+            f"`{'`, `'.join(unregistered)}`\n\n"
+            f"กรุณาเพิ่มด้วย `/slipok addkey <API_KEY> <BRANCH_ID>` ก่อน",
+            parse_mode="Markdown"
+        )
+        return
+
+    keys_str = ",".join(branch_ids)
+    success = await update_group_config(group_id, slipok_keys=keys_str)
+    if success:
+        await message.reply(
+            f"✅ **กำหนด SlipOK Keys เฉพาะกลุ่มสำเร็จ!**\n\n"
+            f"• **กลุ่ม**: {g_name} (`{group_id}`)\n"
+            f"• **Keys ที่ใช้**: `{keys_str}`\n\n"
+            f"💡 สลิปในกลุ่มนี้จะใช้เฉพาะ keys ที่กำหนดเท่านั้น",
+            parse_mode="Markdown"
+        )
+    else:
+        await message.reply("❌ เกิดข้อผิดพลาดในการบันทึกข้อมูล")

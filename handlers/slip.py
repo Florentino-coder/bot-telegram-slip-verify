@@ -386,7 +386,7 @@ async def process_slip_image(message: types.Message, bot: Bot):
                 merchant_names = [n.strip() for n in g_merchant.split(sep) if n.strip()]
             else:
                 merchant_names = await get_merchant_names()
-                
+
             # 1.2 Allowed Accounts Override
             g_accounts = group_config.get("allowed_accounts")
             if g_accounts:
@@ -394,12 +394,12 @@ async def process_slip_image(message: types.Message, bot: Bot):
                 allowed_accounts = [a.strip() for a in g_accounts.split(sep) if a.strip()]
             else:
                 allowed_accounts = await get_allowed_accounts()
-                
+
             # 1.3 SlipOK Mode Override
             g_mode = group_config.get("slipok_mode")
             if g_mode and g_mode in ["smart", "always", "off"]:
                 slipok_mode = g_mode
-                
+
             # 1.4 Group Limits Override
             g_min_limit = group_config.get("min_limit")
             g_max_limit = group_config.get("max_limit")
@@ -407,14 +407,19 @@ async def process_slip_image(message: types.Message, bot: Bot):
                 min_limit = float(g_min_limit)
             if g_max_limit is not None:
                 max_limit = float(g_max_limit)
-                
+
             # 1.5 Group SlipOK Min Amount Override
             g_slipok_min = group_config.get("slipok_min_amount")
             if g_slipok_min is not None:
                 slipok_min_amount = float(g_slipok_min)
+
+            # 1.6 Group SlipOK Keys Override
+            # ดึง branch_ids ที่กลุ่มนี้ได้รับอนุญาตให้ใช้ (None = ใช้ global ทั้งหมด)
+            g_slipok_keys = group_config.get("slipok_keys")
         else:
             merchant_names = await get_merchant_names()
             allowed_accounts = await get_allowed_accounts()
+            g_slipok_keys = None
         
         # 2. Download photo from Telegram to memory
         photo_file = io.BytesIO()
@@ -521,8 +526,41 @@ async def process_slip_image(message: types.Message, bot: Bot):
         # 5. Routing to SlipOK (Smart/Always/Off)
         use_slipok = False
         
-        # Filter for active credentials in database
-        active_credentials = [c for c in slipok_credentials if c.get("status") == "active"]
+        # Filter for active credentials — respect group's assigned SlipOK keys
+        if g_slipok_keys:
+            # กลุ่มนี้มีการกำหนด keys เฉพาะ → ใช้เฉพาะ branch_id ที่อนุญาต
+            allowed_branches = {b.strip() for b in g_slipok_keys.split(",") if b.strip()}
+            active_credentials = [
+                c for c in slipok_credentials
+                if c.get("status") == "active" and c.get("branch_id") in allowed_branches
+            ]
+            logger.info(f"Group has assigned SlipOK keys: {allowed_branches}. Active matching: {len(active_credentials)}")
+
+            # ถ้า key ที่ assign ไว้ทุกอันหมด quota/invalid → fallback โหมดปกติ แจ้ง admin
+            assigned_creds_all = [
+                c for c in slipok_credentials
+                if c.get("branch_id") in allowed_branches
+            ]
+            if assigned_creds_all and not active_credentials:
+                logger.warning(f"All assigned SlipOK keys for this group are exhausted. Falling back to normal mode.")
+                for admin_id in Config.ADMIN_USER_IDS:
+                    try:
+                        await bot.send_message(
+                            chat_id=admin_id,
+                            text=(
+                                f"⚠️ **SlipOK โควต้าหมดทุก Key ของกลุ่มนี้!**\n\n"
+                                f"• กลุ่ม: `{message.chat.title or message.chat.id}`\n"
+                                f"• Keys ที่ assign: `{g_slipok_keys}`\n"
+                                f"• ระบบสลับเป็นโหมดปกติ (OCR+QR เท่านั้น) ชั่วคราว\n"
+                                f"• กรุณาเพิ่ม API Key ใหม่หรือรีเซ็ต quota"
+                            ),
+                            parse_mode="Markdown"
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to alert admin {admin_id}: {e}")
+        else:
+            # ไม่ได้กำหนด → ใช้ global keys ทั้งหมด (พฤติกรรมเดิม)
+            active_credentials = [c for c in slipok_credentials if c.get("status") == "active"]
         
         # Assess risk for smart routing decisions
         ocr_clean = ocr_data if (ocr_data and "error" not in ocr_data) else None
