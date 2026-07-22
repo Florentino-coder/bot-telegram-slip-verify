@@ -11,9 +11,15 @@ class Config:
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
     GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
     
+    # Groq Vision API Configuration (Free tier 100% - https://console.groq.com/)
+    GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
+    GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.2-11b-vision-preview")
+    
     # OpenRouter Configuration (Fallback)
     OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
     OPENROUTER_MODEL: str = os.getenv("OPENROUTER_MODEL", "google/gemini-2.0-flash")
+    # Keep the requested completion within the remaining key/workspace budget.
+    OPENROUTER_MAX_TOKENS: int = int(os.getenv("OPENROUTER_MAX_TOKENS", "800"))
     
     SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
     SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "")
@@ -36,8 +42,8 @@ class Config:
         missing = []
         if not cls.TELEGRAM_BOT_TOKEN:
             missing.append("TELEGRAM_BOT_TOKEN")
-        if not cls.GEMINI_API_KEY and not cls.OPENROUTER_API_KEY:
-            missing.append("GEMINI_API_KEY or OPENROUTER_API_KEY")
+        if not cls.GEMINI_API_KEY and not cls.GROQ_API_KEY and not cls.OPENROUTER_API_KEY:
+            missing.append("GEMINI_API_KEY or GROQ_API_KEY or OPENROUTER_API_KEY")
         if not cls.SUPABASE_URL:
             missing.append("SUPABASE_URL")
         if not cls.SUPABASE_KEY:

@@ -168,7 +168,7 @@ async def _call_openrouter(image_bytes: bytes) -> dict | None:
         
         payload = {
             "model": model_name,
-            "max_tokens": 1000,
+            "max_tokens": Config.OPENROUTER_MAX_TOKENS,
             "messages": [
                 {
                     "role": "system",
@@ -220,11 +220,83 @@ async def _call_openrouter(image_bytes: bytes) -> dict | None:
         return {"error": str(e), "error_code": "API_ERROR"}
 
 
+async def _call_groq_vision(image_bytes: bytes) -> dict | None:
+    """
+    Secondary Provider: Calls Groq Vision API (Free 100% - Ultra Fast Llama 3.2 Vision).
+    """
+    if not Config.GROQ_API_KEY:
+        return None
+
+    try:
+        base64_image = base64.b64encode(image_bytes).decode("utf-8")
+        model_name = Config.GROQ_MODEL or "llama-3.2-11b-vision-preview"
+        
+        headers = {
+            "Authorization": f"Bearer {Config.GROQ_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "model": model_name,
+            "temperature": 0.1,
+            "max_tokens": 1000,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": SYSTEM_PROMPT
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": USER_PROMPT
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{base64_image}"
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+        
+        logger.info(f"Calling Groq Vision API ({model_name})...")
+        async with httpx.AsyncClient(timeout=25.0) as client:
+            response = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                json=payload,
+                headers=headers
+            )
+            
+            if response.status_code != 200:
+                logger.warning(f"Groq Vision API returned status {response.status_code}: {response.text}")
+                return {"error": f"Groq API error {response.status_code}", "error_code": f"HTTP_{response.status_code}"}
+                
+            response_data = response.json()
+            choices = response_data.get("choices", [])
+            if not choices:
+                return {"error": "Empty choices", "error_code": "EMPTY_CHOICES"}
+                
+            content = choices[0].get("message", {}).get("content", "")
+            if not content:
+                return {"error": "Empty content", "error_code": "EMPTY_CONTENT"}
+                
+            return _parse_and_normalize_json(content, f"Groq Vision ({model_name})")
+            
+    except Exception as e:
+        logger.warning(f"Exception during Groq Vision API call: {e}")
+        return {"error": str(e), "error_code": "API_ERROR"}
+
+
 async def extract_slip_details(image_bytes: bytes) -> dict | None:
     """
-    Dual-Provider Vision AI Extraction:
+    Triple-Provider Vision AI Extraction:
     1. Try Google AI Studio Direct API first (Free 100%)
-    2. Fallback to OpenRouter if Gemini Direct key is missing or fails
+    2. Try Groq Vision API second (Free 100% - Ultra Fast Llama 3.2 Vision)
+    3. Fallback to OpenRouter if previous providers are missing or fail
     """
     # 1. Primary: Gemini Direct API (Free)
     if Config.GEMINI_API_KEY:
@@ -232,9 +304,17 @@ async def extract_slip_details(image_bytes: bytes) -> dict | None:
         if direct_result and "error" not in direct_result:
             return direct_result
         else:
-            logger.warning(f"Gemini Direct API failed or returned error: {direct_result}. Trying OpenRouter fallback...")
+            logger.warning(f"Gemini Direct API failed or returned error: {direct_result}. Trying next provider...")
 
-    # 2. Fallback: OpenRouter API
+    # 2. Secondary: Groq Vision API (Free 100%)
+    if Config.GROQ_API_KEY:
+        groq_result = await _call_groq_vision(image_bytes)
+        if groq_result and "error" not in groq_result:
+            return groq_result
+        else:
+            logger.warning(f"Groq Vision API failed or returned error: {groq_result}. Trying OpenRouter fallback...")
+
+    # 3. Fallback: OpenRouter API
     if Config.OPENROUTER_API_KEY:
         openrouter_result = await _call_openrouter(image_bytes)
         if openrouter_result and "error" not in openrouter_result:
@@ -243,6 +323,6 @@ async def extract_slip_details(image_bytes: bytes) -> dict | None:
             logger.error(f"OpenRouter fallback also failed: {openrouter_result}")
             return openrouter_result
 
-    logger.error("No Vision AI provider succeeded (both Gemini Direct and OpenRouter unavailable).")
+    logger.error("No Vision AI provider succeeded (Gemini Direct, Groq Vision, and OpenRouter unavailable).")
     return {"error": "All Vision AI providers failed", "error_code": "ALL_PROVIDERS_FAILED"}
 
