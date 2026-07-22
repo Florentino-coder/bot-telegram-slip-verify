@@ -674,10 +674,25 @@ async def process_slip_image(message: types.Message, bot: Bot):
                     # Check receiver name and account safety after SlipOK success
                     if merchant_names:
                         match_found = False
+                        # Candidate names from SlipOK: receiver_name, ref1, ref2, ref3
+                        candidates = [
+                            verify_res.get("receiver_name"),
+                            verify_res.get("ref1"),
+                            verify_res.get("ref2"),
+                            verify_res.get("ref3")
+                        ]
+                        valid_candidates = [c.strip() for c in candidates if c and isinstance(c, str) and c.strip()]
+                        
+                        best_match_name = verify_res.get("receiver_name", "")
                         for m_name in merchant_names:
-                            if match_merchant_name(m_name, verify_res["receiver_name"]):
-                                match_found = True
+                            for candidate in valid_candidates:
+                                if match_merchant_name(m_name, candidate):
+                                    match_found = True
+                                    best_match_name = candidate
+                                    break
+                            if match_found:
                                 break
+                                
                         if not match_found:
                             error_text = (
                                 f"🔴 **สลิปปลอม! ชื่อผู้รับไม่ตรง**\n\n"
@@ -689,6 +704,8 @@ async def process_slip_image(message: types.Message, bot: Bot):
                             await save_audit_log("FAIL", f"Receiver name mismatch: {verify_res['receiver_name']}", "RECEIVER_MISMATCH")
                             return
                         else:
+                            # Update receiver_name with the matched name (e.g. Thai name from ref3) for clean output display
+                            verify_res["receiver_name"] = best_match_name
                             audit_checks["receiver_match"] = True
 
                     if allowed_accounts and verify_res.get("receiver_account"):

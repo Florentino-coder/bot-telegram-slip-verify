@@ -131,12 +131,20 @@ async def verify_slip_via_slipok(
                 except ValueError:
                     amount = 0.0
 
+                # Retrieve extra ref fields (where bank sometimes puts Thai name/reference)
+                ref1 = data_node.get("ref1") or ""
+                ref2 = data_node.get("ref2") or ""
+                ref3 = data_node.get("ref3") or ""
+
                 return {
                     "success": True,
                     "trans_ref": data_node.get("transRef") or "UNKNOWN_REF",
                     "sender_name": sender_name,
                     "receiver_name": receiver_name,
                     "receiver_account": receiver_account,
+                    "ref1": ref1,
+                    "ref2": ref2,
+                    "ref3": ref3,
                     "amount": amount,
                     "trans_date": trans_date,
                     "sending_bank": data_node.get("sendingBank", ""),
