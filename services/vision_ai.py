@@ -65,19 +65,23 @@ def _parse_and_normalize_json(content: str, provider_name: str) -> dict | None:
 async def _call_gemini_direct(image_bytes: bytes) -> dict | None:
     """
     Primary Provider: Calls Google AI Studio Direct API (Free Tier: 15 RPM / 1500 RPD).
+    Includes automatic fallback list of model identifiers to handle API version/regional naming differences.
     """
     if not Config.GEMINI_API_KEY:
         return None
 
-    model_name = Config.GEMINI_MODEL or "gemini-2.0-flash"
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={Config.GEMINI_API_KEY}"
-    
+    user_model = Config.GEMINI_MODEL or "gemini-2.5-flash"
+    # List of candidate models to try in order
+    candidate_models = [user_model, "gemini-2.5-flash", "gemini-1.5-flash-latest", "gemini-2.0-flash", "gemini-1.5-flash"]
+    # Preserve unique order
+    models_to_try = []
+    for m in candidate_models:
+        if m not in models_to_try:
+            models_to_try.append(m)
+
     base64_image = base64.b64encode(image_bytes).decode("utf-8")
-    
-    headers = {
-        "Content-Type": "application/json"
-    }
-    
+    headers = {"Content-Type": "application/json"}
+
     payload = {
         "systemInstruction": {
             "parts": [{"text": SYSTEM_PROMPT}]
@@ -100,32 +104,43 @@ async def _call_gemini_direct(image_bytes: bytes) -> dict | None:
             "responseMimeType": "application/json"
         }
     }
-    
-    try:
-        logger.info(f"Calling Google AI Studio Direct API ({model_name})...")
-        async with httpx.AsyncClient(timeout=25.0) as client:
-            response = await client.post(url, json=payload, headers=headers)
-            
-            if response.status_code != 200:
-                logger.warning(f"Gemini Direct API returned HTTP status {response.status_code}: {response.text}")
-                return {"error": f"Gemini Direct error {response.status_code}", "error_code": f"HTTP_{response.status_code}"}
-                
-            res_json = response.json()
-            candidates = res_json.get("candidates", [])
-            if not candidates:
-                logger.warning("Gemini Direct API response empty candidates.")
-                return {"error": "Empty candidates", "error_code": "EMPTY_CANDIDATES"}
-                
-            text = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "")
-            if not text:
-                logger.warning("Gemini Direct API empty response text.")
-                return {"error": "Empty text response", "error_code": "EMPTY_TEXT"}
-                
-            return _parse_and_normalize_json(text, "Google AI Studio Direct")
-            
-    except Exception as e:
-        logger.warning(f"Exception during Gemini Direct API call: {e}")
-        return {"error": str(e), "error_code": "API_ERROR"}
+
+    last_error = None
+    async with httpx.AsyncClient(timeout=25.0) as client:
+        for model_name in models_to_try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={Config.GEMINI_API_KEY}"
+            try:
+                logger.info(f"Calling Google AI Studio Direct API ({model_name})...")
+                response = await client.post(url, json=payload, headers=headers)
+
+                if response.status_code == 200:
+                    res_json = response.json()
+                    candidates = res_json.get("candidates", [])
+                    if not candidates:
+                        logger.warning(f"Gemini Direct API ({model_name}) response empty candidates.")
+                        last_error = {"error": "Empty candidates", "error_code": "EMPTY_CANDIDATES"}
+                        continue
+
+                    text = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+                    if not text:
+                        logger.warning(f"Gemini Direct API ({model_name}) empty response text.")
+                        last_error = {"error": "Empty text response", "error_code": "EMPTY_TEXT"}
+                        continue
+
+                    return _parse_and_normalize_json(text, f"Google AI Studio Direct ({model_name})")
+                else:
+                    logger.warning(f"Gemini Direct API ({model_name}) returned HTTP status {response.status_code}: {response.text}")
+                    last_error = {"error": f"Gemini Direct error {response.status_code}", "error_code": f"HTTP_{response.status_code}"}
+                    # If 404 or 429, try next model in loop
+                    if response.status_code in (404, 429):
+                        continue
+                    else:
+                        break
+            except Exception as e:
+                logger.warning(f"Exception during Gemini Direct API call ({model_name}): {e}")
+                last_error = {"error": str(e), "error_code": "API_ERROR"}
+
+    return last_error
 
 
 async def _call_openrouter(image_bytes: bytes) -> dict | None:
