@@ -30,20 +30,115 @@ Output JSON Format:
 USER_PROMPT = "Extract the details from this Thai bank slip image. Answer only in JSON."
 
 
-async def extract_slip_details(image_bytes: bytes) -> dict | None:
+def _parse_and_normalize_json(content: str, provider_name: str) -> dict | None:
+    """Helper to clean and parse JSON response from LLM providers."""
+    try:
+        cleaned_content = content.strip()
+        if cleaned_content.startswith("```"):
+            lines = cleaned_content.splitlines()
+            cleaned_content = "\n".join(lines[1:-1])
+            
+        data = json.loads(cleaned_content)
+        logger.info(f"Successfully extracted slip data via {provider_name}: {data}")
+        
+        # Normalize values
+        if data.get("amount") is not None:
+            try:
+                data["amount"] = float(str(data["amount"]).replace(",", ""))
+            except ValueError:
+                data["amount"] = None
+        
+        # Normalize confidence scores
+        for field in ["amount_confidence", "receiver_confidence", "reference_confidence"]:
+            val = data.get(field)
+            try:
+                data[field] = float(val) if val is not None else 1.0
+            except (ValueError, TypeError):
+                data[field] = 1.0
+                
+        return data
+    except json.JSONDecodeError as je:
+        logger.error(f"Failed to parse {provider_name} content as JSON. Raw content: {content}. Error: {je}")
+        return {"error": f"Failed to parse JSON response: {je}", "error_code": "INVALID_JSON"}
+
+
+async def _call_gemini_direct(image_bytes: bytes) -> dict | None:
     """
-    Sends the image bytes to OpenRouter Vision API and extracts slip details as a dictionary.
-    Returns a dictionary of parsed details or a dictionary containing an 'error' key on failure.
+    Primary Provider: Calls Google AI Studio Direct API (Free Tier: 15 RPM / 1500 RPD).
+    """
+    if not Config.GEMINI_API_KEY:
+        return None
+
+    model_name = Config.GEMINI_MODEL or "gemini-2.0-flash"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={Config.GEMINI_API_KEY}"
+    
+    base64_image = base64.b64encode(image_bytes).decode("utf-8")
+    
+    headers = {
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "systemInstruction": {
+            "parts": [{"text": SYSTEM_PROMPT}]
+        },
+        "contents": [
+            {
+                "parts": [
+                    {"text": USER_PROMPT},
+                    {
+                        "inline_data": {
+                            "mime_type": "image/jpeg",
+                            "data": base64_image
+                        }
+                    }
+                ]
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.1,
+            "responseMimeType": "application/json"
+        }
+    }
+    
+    try:
+        logger.info(f"Calling Google AI Studio Direct API ({model_name})...")
+        async with httpx.AsyncClient(timeout=25.0) as client:
+            response = await client.post(url, json=payload, headers=headers)
+            
+            if response.status_code != 200:
+                logger.warning(f"Gemini Direct API returned HTTP status {response.status_code}: {response.text}")
+                return {"error": f"Gemini Direct error {response.status_code}", "error_code": f"HTTP_{response.status_code}"}
+                
+            res_json = response.json()
+            candidates = res_json.get("candidates", [])
+            if not candidates:
+                logger.warning("Gemini Direct API response empty candidates.")
+                return {"error": "Empty candidates", "error_code": "EMPTY_CANDIDATES"}
+                
+            text = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+            if not text:
+                logger.warning("Gemini Direct API empty response text.")
+                return {"error": "Empty text response", "error_code": "EMPTY_TEXT"}
+                
+            return _parse_and_normalize_json(text, "Google AI Studio Direct")
+            
+    except Exception as e:
+        logger.warning(f"Exception during Gemini Direct API call: {e}")
+        return {"error": str(e), "error_code": "API_ERROR"}
+
+
+async def _call_openrouter(image_bytes: bytes) -> dict | None:
+    """
+    Fallback Provider: Calls OpenRouter API.
     """
     if not Config.OPENROUTER_API_KEY:
-        logger.error("OpenRouter API key is missing.")
-        return {"error": "API Key is missing", "error_code": "CONFIG_ERROR"}
+        return None
 
     try:
-        # Encode image to base64
         base64_image = base64.b64encode(image_bytes).decode("utf-8")
+        model_name = Config.OPENROUTER_MODEL or "google/gemini-2.0-flash"
         
-        # Prepare headers
         headers = {
             "Authorization": f"Bearer {Config.OPENROUTER_API_KEY}",
             "Content-Type": "application/json",
@@ -51,10 +146,9 @@ async def extract_slip_details(image_bytes: bytes) -> dict | None:
             "X-Title": "Telegram Slip Verification Bot"
         }
         
-        # Prepare request payload
         payload = {
-            "model": Config.OPENROUTER_MODEL,
-            "max_tokens": 1000, # Avoid 402 credit limit issues by asking for a small token allocation
+            "model": model_name,
+            "max_tokens": 1000,
             "messages": [
                 {
                     "role": "system",
@@ -78,7 +172,7 @@ async def extract_slip_details(image_bytes: bytes) -> dict | None:
             ]
         }
         
-        # Make async POST request
+        logger.info(f"Calling OpenRouter Fallback API ({model_name})...")
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
                 "https://openrouter.ai/api/v1/chat/completions",
@@ -86,60 +180,49 @@ async def extract_slip_details(image_bytes: bytes) -> dict | None:
                 headers=headers
             )
             
-            if response.status_code == 429:
-                logger.error("OpenRouter API rate limit exceeded.")
-                return {"error": "OpenRouter API rate limit exceeded", "error_code": "RATE_LIMIT"}
-            elif response.status_code != 200:
-                logger.error(f"OpenRouter API returned error code {response.status_code}: {response.text}")
+            if response.status_code != 200:
+                logger.error(f"OpenRouter API returned status {response.status_code}: {response.text}")
                 return {"error": f"OpenRouter API error {response.status_code}", "error_code": f"HTTP_{response.status_code}"}
                 
             response_data = response.json()
             choices = response_data.get("choices", [])
             if not choices:
-                logger.error("OpenRouter API response did not contain any choices.")
-                return {"error": "Empty choices in response", "error_code": "EMPTY_CHOICES"}
+                return {"error": "Empty choices", "error_code": "EMPTY_CHOICES"}
                 
             content = choices[0].get("message", {}).get("content", "")
             if not content:
-                logger.error("OpenRouter API response content is empty.")
-                return {"error": "Empty message content", "error_code": "EMPTY_CONTENT"}
+                return {"error": "Empty content", "error_code": "EMPTY_CONTENT"}
                 
-            # Parse response content as JSON
-            try:
-                # Clean content block if markdown formatted (like ```json ... ```)
-                cleaned_content = content.strip()
-                if cleaned_content.startswith("```"):
-                    lines = cleaned_content.splitlines()
-                    # Remove the first line (```json) and the last line (```)
-                    cleaned_content = "\n".join(lines[1:-1])
-                    
-                data = json.loads(cleaned_content)
-                logger.info(f"Successfully extracted slip data via OpenRouter: {data}")
-                
-                # Normalize values
-                if data.get("amount") is not None:
-                    try:
-                        # Convert amount to float (if it is a string representation)
-                        data["amount"] = float(str(data["amount"]).replace(",", ""))
-                    except ValueError:
-                        data["amount"] = None
-                
-                # Normalize confidence scores
-                for field in ["amount_confidence", "receiver_confidence", "reference_confidence"]:
-                    val = data.get(field)
-                    try:
-                        data[field] = float(val) if val is not None else 1.0
-                    except (ValueError, TypeError):
-                        data[field] = 1.0
-                        
-                return data
-            except json.JSONDecodeError as je:
-                logger.error(f"Failed to parse content as JSON. Raw content: {content}. Error: {je}")
-                return {"error": f"Failed to parse JSON response: {je}", "error_code": "INVALID_JSON"}
-                
-    except httpx.TimeoutException:
-        logger.error("OpenRouter Vision API request timed out.")
-        return {"error": "Request timed out", "error_code": "TIMEOUT"}
+            return _parse_and_normalize_json(content, "OpenRouter")
+            
     except Exception as e:
-        logger.error(f"Exception during OpenRouter vision request: {e}")
+        logger.error(f"Exception during OpenRouter API call: {e}")
         return {"error": str(e), "error_code": "API_ERROR"}
+
+
+async def extract_slip_details(image_bytes: bytes) -> dict | None:
+    """
+    Dual-Provider Vision AI Extraction:
+    1. Try Google AI Studio Direct API first (Free 100%)
+    2. Fallback to OpenRouter if Gemini Direct key is missing or fails
+    """
+    # 1. Primary: Gemini Direct API (Free)
+    if Config.GEMINI_API_KEY:
+        direct_result = await _call_gemini_direct(image_bytes)
+        if direct_result and "error" not in direct_result:
+            return direct_result
+        else:
+            logger.warning(f"Gemini Direct API failed or returned error: {direct_result}. Trying OpenRouter fallback...")
+
+    # 2. Fallback: OpenRouter API
+    if Config.OPENROUTER_API_KEY:
+        openrouter_result = await _call_openrouter(image_bytes)
+        if openrouter_result and "error" not in openrouter_result:
+            return openrouter_result
+        else:
+            logger.error(f"OpenRouter fallback also failed: {openrouter_result}")
+            return openrouter_result
+
+    logger.error("No Vision AI provider succeeded (both Gemini Direct and OpenRouter unavailable).")
+    return {"error": "All Vision AI providers failed", "error_code": "ALL_PROVIDERS_FAILED"}
+

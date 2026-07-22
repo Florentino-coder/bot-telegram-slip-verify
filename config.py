@@ -6,8 +6,15 @@ load_dotenv()
 
 class Config:
     TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    
+    # Gemini Direct API Configuration (Free tier from Google AI Studio)
+    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
+    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+    
+    # OpenRouter Configuration (Fallback)
     OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
-    OPENROUTER_MODEL: str = os.getenv("OPENROUTER_MODEL", "google/gemini-2.5-flash")
+    OPENROUTER_MODEL: str = os.getenv("OPENROUTER_MODEL", "google/gemini-2.0-flash")
+    
     SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
     SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "")
     MERCHANT_NAME: str = os.getenv("MERCHANT_NAME", "")
@@ -29,8 +36,8 @@ class Config:
         missing = []
         if not cls.TELEGRAM_BOT_TOKEN:
             missing.append("TELEGRAM_BOT_TOKEN")
-        if not cls.OPENROUTER_API_KEY:
-            missing.append("OPENROUTER_API_KEY")
+        if not cls.GEMINI_API_KEY and not cls.OPENROUTER_API_KEY:
+            missing.append("GEMINI_API_KEY or OPENROUTER_API_KEY")
         if not cls.SUPABASE_URL:
             missing.append("SUPABASE_URL")
         if not cls.SUPABASE_KEY:
