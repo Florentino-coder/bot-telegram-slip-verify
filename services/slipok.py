@@ -9,6 +9,7 @@ SLIPOK_ERROR_MAP = {
     1011: "❌ สลิปไม่ถูกต้อง หรือ คิวอาร์โค้ดไม่สามารถใช้งานได้ (ไม่พบข้อมูลในระบบธนาคาร)",
     1012: "⚠️ ตรวจพบการใช้สลิปซ้ำ! สลิปนี้เคยได้รับการตรวจยืนยันในระบบ SlipOK ไปก่อนหน้านี้แล้ว",
     1013: "❌ ยอดเงินโอนไม่ถูกต้องหรือยอดเงินไม่ตรง",
+    1014: "❌ บัญชีผู้รับไม่ตรงกับบัญชีหลักของร้าน กรุณาตรวจสอบบัญชีปลายทางบนสลิป",
     1021: "🔑 API Key หรือ Branch ID ของ SlipOK ไม่ถูกต้อง กรุณาติดต่อแอดมินเพื่อแก้ไข",
     1022: "💳 โควต้าใช้งาน SlipOK หมดชั่วคราว (เครดิตไม่เพียงพอ) กรุณาติดต่อแอดมิน",
 }
@@ -93,6 +94,7 @@ async def verify_slip_via_slipok(
                             "success": False,
                             "error_code": code,
                             "message": msg,
+                            "http_status": response.status_code,
                             "raw": err_json
                         }
                 except Exception:
@@ -164,6 +166,7 @@ async def verify_slip_via_slipok(
                     "success": False,
                     "error_code": code,
                     "message": translated_msg,
+                    "http_status": response.status_code,
                     "raw": res_json
                 }
 

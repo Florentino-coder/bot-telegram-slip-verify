@@ -1,4 +1,5 @@
 import io
+import json
 import logging
 from aiogram import Router, types, Bot
 from aiogram.filters import Command
@@ -21,6 +22,24 @@ from services.slipok import verify_slip_via_slipok, check_slipok_quota
 
 logger = logging.getLogger("SlipBot.Handlers.Slip")
 router = Router()
+
+
+def _failure_detail_keyboard(slip_id: str) -> InlineKeyboardMarkup:
+    """Button used on failed checks so user can inspect the complete audit response."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📋 ดูรายละเอียดทั้งหมด", callback_data=f"detail:{slip_id}")]
+    ])
+
+
+def _json_for_telegram(value, limit: int = 3500) -> str:
+    """Serialize provider data without Markdown parsing or crashing on odd values."""
+    try:
+        text = json.dumps(value, ensure_ascii=False, indent=2, default=str)
+    except Exception as exc:
+        text = f"ไม่สามารถแปลงข้อมูลได้: {exc}\n{value!r}"
+    if len(text) > limit:
+        text = text[:limit] + "\n… [ตัดท้ายเพราะเกินขีดจำกัด Telegram]"
+    return text
 
 import time
 import hashlib
@@ -517,7 +536,7 @@ async def process_slip_image(message: types.Message, bot: Bot):
                         f"❌ รหัสอ้างอิง: `{ocr_ref}`\n"
                         "สลิปใบนี้เคยได้รับการอนุมัติในระบบไปแล้ว ไม่สามารถใช้งานซ้ำได้"
                     )
-                    await reply_message(dup_text)
+                    await reply_message(dup_text, reply_markup=_failure_detail_keyboard(slip_id))
                     audit_checks["duplicate"] = True
                     risk_score = 100
                     await save_audit_log("FAIL", f"Duplicate transaction reference: {ocr_ref}", "DUPLICATE")
@@ -699,7 +718,7 @@ async def process_slip_image(message: types.Message, bot: Bot):
                                 f"ชื่อผู้รับบนสลิป: `{verify_res['receiver_name']}`\n"
                                 f"ไม่ตรงกับชื่อที่ได้รับอนุญาต กรุณาตรวจสอบสลิปอีกครั้ง"
                             )
-                            await reply_message(error_text)
+                            await reply_message(error_text, reply_markup=_failure_detail_keyboard(slip_id))
                             risk_score = 100
                             await save_audit_log("FAIL", f"Receiver name mismatch: {verify_res['receiver_name']}", "RECEIVER_MISMATCH")
                             return
@@ -721,7 +740,7 @@ async def process_slip_image(message: types.Message, bot: Bot):
                                 f"เลขที่บัญชีผู้รับบนสลิป: `{verify_res['receiver_account']}`\n"
                                 f"ไม่ตรงกับบัญชีที่ได้รับอนุญาต กรุณาตรวจสอบสลิปอีกครั้ง"
                             )
-                            await reply_message(error_text)
+                            await reply_message(error_text, reply_markup=_failure_detail_keyboard(slip_id))
                             risk_score = 100
                             await save_audit_log("FAIL", f"Receiver account mismatch: {verify_res['receiver_account']}", "ACCOUNT_MISMATCH")
                             return
@@ -735,7 +754,7 @@ async def process_slip_image(message: types.Message, bot: Bot):
                             f"❌ รหัสอ้างอิง: `{s_ref}`\n"
                             "สลิปใบนี้เคยได้รับการอนุมัติในระบบไปแล้ว ไม่สามารถใช้งานซ้ำได้"
                         )
-                        await reply_message(dup_text)
+                        await reply_message(dup_text, reply_markup=_failure_detail_keyboard(slip_id))
                         audit_checks["duplicate"] = True
                         risk_score = 100
                         await save_audit_log("FAIL", f"Duplicate reference check: {s_ref}", "DUPLICATE")
@@ -801,12 +820,14 @@ async def process_slip_image(message: types.Message, bot: Bot):
                     else:
                         error_text = (
                             f"🔴 **สลิปไม่ผ่านการตรวจสอบจากธนาคาร!**\n\n"
-                            f"**สาเหตุ:** {verify_res['message']}\n\n"
+                            f"**สาเหตุ:** {verify_res.get('message') or 'ไม่ระบุ'}\n"
+                            f"**รหัสข้อผิดพลาด:** `{verify_res.get('error_code') or 'ไม่ระบุ'}`\n"
+                            f"**HTTP status:** `{verify_res.get('http_status') or 'ไม่ระบุ'}`\n\n"
                             f"กรุณาส่งรูปภาพสลิปที่ถูกต้อง หรือติดต่อเจ้าหน้าที่หากมีข้อสงสัย"
                         )
-                        await reply_message(error_text)
+                        await reply_message(error_text, reply_markup=_failure_detail_keyboard(slip_id))
                         risk_score = 100
-                        await save_audit_log("FAIL", f"SlipOK genuine failure: {verify_res['message']}", str(err_code) if err_code else "SLIPOK_FAILURE")
+                        await save_audit_log("FAIL", f"SlipOK genuine failure: {verify_res.get('message')}", str(err_code) if err_code else "SLIPOK_FAILURE")
                         return
             else:
                 logger.warning("SlipOK API returned empty response or HTTP error. Falling back to local verification.")
@@ -824,7 +845,7 @@ async def process_slip_image(message: types.Message, bot: Bot):
                     "เนื่องจากระบบยืนยันสลิปผ่านธนาคารอัตโนมัติไม่พร้อมใช้งานในขณะนี้ และสลิปโอนเงินไม่ชัดเจน/น่าสงสัย "
                     "กรุณารอเจ้าหน้าที่ตรวจสอบยอดเงินโอนเข้าโดยตรงเพื่อความถูกต้อง"
                 )
-                await reply_message(err_text)
+                await reply_message(err_text, reply_markup=_failure_detail_keyboard(slip_id))
                 await save_audit_log("FAIL", failure_reason, error_code)
                 return
 
@@ -836,7 +857,7 @@ async def process_slip_image(message: types.Message, bot: Bot):
                 "🚨 **ตรวจสอบสลิปไม่สำเร็จ (ต้องได้รับการตรวจสอบโดยเจ้าหน้าที่)**\n\n"
                 "ระบบไม่สามารถอ่านข้อความบนภาพสลิปได้ชั่วคราว กรุณารอเจ้าหน้าที่ตรวจสอบ หรือลองส่งสลิปใหม่อีกครั้ง"
             )
-            await reply_message(err_text)
+            await reply_message(err_text, reply_markup=_failure_detail_keyboard(slip_id))
             await save_audit_log("FAIL", f"Local OCR failed: {ocr_data['error']}", ocr_data.get("error_code", "OCR_ERROR"))
             return
 
@@ -854,7 +875,7 @@ async def process_slip_image(message: types.Message, bot: Bot):
                 f"**ปัญหาที่พบ:**\n{warnings_text}\n\n"
                 "กรุณาตรวจสอบสลิปอีกครั้ง หรือติดต่อเจ้าหน้าที่หากข้อมูลดังกล่าวมีความผิดพลาด"
             )
-            await reply_message(error_text)
+            await reply_message(error_text, reply_markup=_failure_detail_keyboard(slip_id))
             await save_audit_log("FAIL", f"Risk engine warnings: {', '.join(risk_result['warnings'])}", "SUSPICIOUS")
             return
 
@@ -941,7 +962,7 @@ async def process_slip_image(message: types.Message, bot: Bot):
         if is_group and not processing_msg:
             pass
         else:
-            await reply_message(err_text)
+            await reply_message(err_text, reply_markup=_failure_detail_keyboard(slip_id))
                 
         risk_score = 100
         await save_audit_log("ERROR", str(e), "INTERNAL_ERROR")
@@ -956,7 +977,33 @@ async def process_detail_callback(callback_query: CallbackQuery):
     if not slip_log:
         await callback_query.answer("❌ ไม่พบข้อมูลสลิปนี้ในระบบ", show_alert=True)
         return
-        
+
+    # Failed/error checks need provider diagnostics, not the normal success summary.
+    if slip_log.get("status") != "PASS":
+        slipok_res = slip_log.get("slipok_result") or {}
+        failure_text = (
+            "📋 รายละเอียดการตรวจสอบสลิป\n"
+            f"Slip ID: {slip_id}\n"
+            f"สถานะ: {slip_log.get('status') or 'ไม่ทราบ'}\n"
+            f"เหตุผล: {slip_log.get('failure_reason') or slipok_res.get('message') or 'ไม่ระบุ'}\n"
+            f"รหัสข้อผิดพลาด: {slip_log.get('error_code') or slipok_res.get('error_code') or 'ไม่ระบุ'}\n"
+            f"HTTP status: {slipok_res.get('http_status') or 'ไม่ระบุ'}\n"
+            f"Provider: {(slip_log.get('risk_result') or {}).get('provider_used', 'ไม่ระบุ')}\n\n"
+            "ข้อมูลจาก SlipOK / ระบบ:\n"
+            f"{_json_for_telegram({
+                'slipok': slipok_res,
+                'qr': slip_log.get('qr_result'),
+                'ocr': slip_log.get('ocr_result'),
+                'risk': slip_log.get('risk_result'),
+            })}"
+        )
+        try:
+            await callback_query.message.edit_text(failure_text, parse_mode=None)
+        except Exception as exc:
+            logger.error(f"Failed to edit failure detail message: {exc}")
+        await callback_query.answer()
+        return
+
     ocr_res = slip_log.get("ocr_result") or {}
     slipok_res = slip_log.get("slipok_result") or {}
     qr_res = slip_log.get("qr_result") or {}
@@ -1099,4 +1146,3 @@ async def process_summary_callback(callback_query: CallbackQuery):
     except Exception as e:
         logger.error(f"Failed to edit callback summary message: {e}")
     await callback_query.answer()
-
