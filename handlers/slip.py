@@ -981,6 +981,13 @@ async def process_detail_callback(callback_query: CallbackQuery):
     # Failed/error checks need provider diagnostics, not the normal success summary.
     if slip_log.get("status") != "PASS":
         slipok_res = slip_log.get("slipok_result") or {}
+        risk_res = slip_log.get("risk_result") or {}
+        diag_payload = {
+            "slipok": slipok_res,
+            "qr": slip_log.get("qr_result"),
+            "ocr": slip_log.get("ocr_result"),
+            "risk": risk_res,
+        }
         failure_text = (
             "📋 รายละเอียดการตรวจสอบสลิป\n"
             f"Slip ID: {slip_id}\n"
@@ -988,14 +995,9 @@ async def process_detail_callback(callback_query: CallbackQuery):
             f"เหตุผล: {slip_log.get('failure_reason') or slipok_res.get('message') or 'ไม่ระบุ'}\n"
             f"รหัสข้อผิดพลาด: {slip_log.get('error_code') or slipok_res.get('error_code') or 'ไม่ระบุ'}\n"
             f"HTTP status: {slipok_res.get('http_status') or 'ไม่ระบุ'}\n"
-            f"Provider: {(slip_log.get('risk_result') or {}).get('provider_used', 'ไม่ระบุ')}\n\n"
+            f"Provider: {risk_res.get('provider_used', 'ไม่ระบุ')}\n\n"
             "ข้อมูลจาก SlipOK / ระบบ:\n"
-            f"{_json_for_telegram({
-                'slipok': slipok_res,
-                'qr': slip_log.get('qr_result'),
-                'ocr': slip_log.get('ocr_result'),
-                'risk': slip_log.get('risk_result'),
-            })}"
+            f"{_json_for_telegram(diag_payload)}"
         )
         try:
             await callback_query.message.edit_text(failure_text, parse_mode=None)
