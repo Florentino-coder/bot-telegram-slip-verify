@@ -108,37 +108,42 @@ async def _call_gemini_direct(image_bytes: bytes) -> dict | None:
     last_error = None
     async with httpx.AsyncClient(timeout=25.0) as client:
         for model_name in models_to_try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={Config.GEMINI_API_KEY}"
-            try:
-                logger.info(f"Calling Google AI Studio Direct API ({model_name})...")
-                response = await client.post(url, json=payload, headers=headers)
+            # Try v1 first (GA endpoint for 1.5-flash), then v1beta for experimental models
+            endpoints = [
+                f"https://generativelanguage.googleapis.com/v1/models/{model_name}:generateContent?key={Config.GEMINI_API_KEY}",
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={Config.GEMINI_API_KEY}"
+            ]
+            for url in endpoints:
+                try:
+                    logger.info(f"Calling Google AI Studio Direct API ({model_name})...")
+                    response = await client.post(url, json=payload, headers=headers)
 
-                if response.status_code == 200:
-                    res_json = response.json()
-                    candidates = res_json.get("candidates", [])
-                    if not candidates:
-                        logger.warning(f"Gemini Direct API ({model_name}) response empty candidates.")
-                        last_error = {"error": "Empty candidates", "error_code": "EMPTY_CANDIDATES"}
-                        continue
+                    if response.status_code == 200:
+                        res_json = response.json()
+                        candidates = res_json.get("candidates", [])
+                        if not candidates:
+                            logger.warning(f"Gemini Direct API ({model_name}) response empty candidates.")
+                            last_error = {"error": "Empty candidates", "error_code": "EMPTY_CANDIDATES"}
+                            continue
 
-                    text = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "")
-                    if not text:
-                        logger.warning(f"Gemini Direct API ({model_name}) empty response text.")
-                        last_error = {"error": "Empty text response", "error_code": "EMPTY_TEXT"}
-                        continue
+                        text = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+                        if not text:
+                            logger.warning(f"Gemini Direct API ({model_name}) empty response text.")
+                            last_error = {"error": "Empty text response", "error_code": "EMPTY_TEXT"}
+                            continue
 
-                    return _parse_and_normalize_json(text, f"Google AI Studio Direct ({model_name})")
-                else:
-                    logger.warning(f"Gemini Direct API ({model_name}) returned HTTP status {response.status_code}: {response.text}")
-                    last_error = {"error": f"Gemini Direct error {response.status_code}", "error_code": f"HTTP_{response.status_code}"}
-                    # If 404 or 429, try next model in loop
-                    if response.status_code in (404, 429):
-                        continue
+                        return _parse_and_normalize_json(text, f"Google AI Studio Direct ({model_name})")
                     else:
-                        break
-            except Exception as e:
-                logger.warning(f"Exception during Gemini Direct API call ({model_name}): {e}")
-                last_error = {"error": str(e), "error_code": "API_ERROR"}
+                        logger.warning(f"Gemini Direct API ({model_name}) returned HTTP status {response.status_code}: {response.text}")
+                        last_error = {"error": f"Gemini Direct error {response.status_code}", "error_code": f"HTTP_{response.status_code}"}
+                        # If 404 or 429, try next endpoint/model in loop
+                        if response.status_code in (404, 429):
+                            continue
+                        else:
+                            break
+                except Exception as e:
+                    logger.warning(f"Exception during Gemini Direct API call ({model_name}): {e}")
+                    last_error = {"error": str(e), "error_code": "API_ERROR"}
 
     return last_error
 
