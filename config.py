@@ -10,6 +10,7 @@ class Config:
     # Gemini Direct API Configuration (Free tier from Google AI Studio)
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
     GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+    ENABLE_GEMINI_DIRECT: bool = os.getenv("ENABLE_GEMINI_DIRECT", "False").lower() == "true"
     
     # Groq Vision API Configuration (Free tier 100% - https://console.groq.com/)
     GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")

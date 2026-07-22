@@ -299,7 +299,7 @@ async def extract_slip_details(image_bytes: bytes) -> dict | None:
     3. Fallback to OpenRouter if previous providers are missing or fail
     """
     # 1. Primary: Gemini Direct API (Free)
-    if Config.GEMINI_API_KEY:
+    if Config.ENABLE_GEMINI_DIRECT and Config.GEMINI_API_KEY:
         direct_result = await _call_gemini_direct(image_bytes)
         if direct_result and "error" not in direct_result:
             return direct_result
@@ -325,4 +325,3 @@ async def extract_slip_details(image_bytes: bytes) -> dict | None:
 
     logger.error("No Vision AI provider succeeded (Gemini Direct, Groq Vision, and OpenRouter unavailable).")
     return {"error": "All Vision AI providers failed", "error_code": "ALL_PROVIDERS_FAILED"}
-
